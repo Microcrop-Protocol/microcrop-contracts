@@ -1,0 +1,3 @@
+[submodule "microcrop/lib/forge-std"]
+	path = microcrop/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
