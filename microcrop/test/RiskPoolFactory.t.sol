@@ -1,777 +1,479 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.28;
+pragma solidity ^0.8.28;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, console2} from "forge-std/Test.sol";
 import {RiskPoolFactory} from "../src/RiskPoolFactory.sol";
 import {RiskPool} from "../src/RiskPool.sol";
-import {MockUSDC} from "./mocks/MockUSDC.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+/**
+ * @title MockUSDC
+ * @dev Simple mock USDC for testing
+ */
+contract MockUSDC is IERC20 {
+    string public constant name = "USD Coin";
+    string public constant symbol = "USDC";
+    uint8 public constant decimals = 6;
+
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    uint256 private _totalSupply;
+
+    function mint(address to, uint256 amount) external {
+        _balances[to] += amount;
+        _totalSupply += amount;
+        emit Transfer(address(0), to, amount);
+    }
+
+    function totalSupply() external view returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) external view returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        _balances[msg.sender] -= amount;
+        _balances[to] += amount;
+        emit Transfer(msg.sender, to, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) external view returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        _allowances[from][msg.sender] -= amount;
+        _balances[from] -= amount;
+        _balances[to] += amount;
+        emit Transfer(from, to, amount);
+        return true;
+    }
+}
 
 /**
  * @title RiskPoolFactoryTest
- * @notice Comprehensive test suite for RiskPoolFactory contract
+ * @dev Tests for the upgradeable factory contract
  */
 contract RiskPoolFactoryTest is Test {
+    RiskPoolFactory public factoryImplementation;
     RiskPoolFactory public factory;
+    RiskPool public poolImplementation;
     MockUSDC public usdc;
 
-    address public admin = makeAddr("admin");
-    address public treasury = makeAddr("treasury");
-    address public investor1 = makeAddr("investor1");
-    address public nonAdmin = makeAddr("nonAdmin");
+    address public admin = address(this);
+    address public treasury = address(0x2);
+    address public protocolTreasury = address(0x3);
+    address public defaultDistributor = address(0x4);
+    address public investor1 = address(0x5);
+    address public institutionalInvestor = address(0x6);
+    address public productBuilder = address(0x7);
+
+    uint256 public constant INITIAL_BALANCE = 10_000_000e6;
 
     function setUp() public {
         usdc = new MockUSDC();
 
-        vm.prank(admin);
-        factory = new RiskPoolFactory(address(usdc), treasury);
+        // Deploy implementations
+        factoryImplementation = new RiskPoolFactory();
+        poolImplementation = new RiskPool();
 
-        // Fund investor for testing created pools
-        usdc.mint(investor1, 1_000_000e6);
-    }
-
-    // ============ Constructor Tests ============
-
-    function test_Constructor_SetsCorrectValues() public view {
-        assertEq(factory.USDC(), address(usdc));
-        assertEq(factory.treasury(), treasury);
-        assertEq(factory.defaultPlatformFee(), 10);
-        assertEq(factory.poolCounter(), 0);
-    }
-
-    function test_Constructor_GrantsRoles() public view {
-        assertTrue(factory.hasRole(factory.DEFAULT_ADMIN_ROLE(), admin));
-        assertTrue(factory.hasRole(factory.ADMIN_ROLE(), admin));
-    }
-
-    function test_Constructor_RevertsWithZeroUSDC() public {
-        vm.expectRevert(RiskPoolFactory.ZeroAddress.selector);
-        new RiskPoolFactory(address(0), treasury);
-    }
-
-    function test_Constructor_RevertsWithZeroTreasury() public {
-        vm.expectRevert(RiskPoolFactory.ZeroAddress.selector);
-        new RiskPoolFactory(address(usdc), address(0));
-    }
-
-    // ============ Create Pool Tests ============
-
-    function test_CreatePool_Success() public {
-        vm.prank(admin);
-        address poolAddress = factory.createPool(
-            "Kenya Maize Drought Q1 2026",
-            "mKM-Q1-26",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
+        // Deploy factory proxy
+        bytes memory initData = abi.encodeWithSelector(
+            RiskPoolFactory.initialize.selector,
+            address(usdc),
+            treasury,
+            protocolTreasury,
+            address(poolImplementation)
         );
+
+        ERC1967Proxy proxy = new ERC1967Proxy(address(factoryImplementation), initData);
+        factory = RiskPoolFactory(address(proxy));
+
+        // Set default distributor
+        factory.setDefaultDistributor(defaultDistributor);
+
+        // Mint USDC
+        usdc.mint(investor1, INITIAL_BALANCE);
+        usdc.mint(institutionalInvestor, INITIAL_BALANCE);
+    }
+
+    // ============ Initialization Tests ============
+
+    function test_Initialize() public view {
+        assertEq(factory.usdc(), address(usdc));
+        assertEq(factory.treasury(), treasury);
+        assertEq(factory.protocolTreasury(), protocolTreasury);
+        assertEq(factory.poolImplementation(), address(poolImplementation));
+        assertEq(factory.defaultDistributor(), defaultDistributor);
+    }
+
+    function test_Initialize_GrantsRoles() public view {
+        assertTrue(factory.hasRole(factory.DEFAULT_ADMIN_ROLE(), address(this)));
+        assertTrue(factory.hasRole(factory.ADMIN_ROLE(), address(this)));
+        assertTrue(factory.hasRole(factory.UPGRADER_ROLE(), address(this)));
+    }
+
+    function test_Initialize_CannotReinitialize() public {
+        vm.expectRevert();
+        factory.initialize(
+            address(usdc),
+            treasury,
+            protocolTreasury,
+            address(poolImplementation)
+        );
+    }
+
+    // ============ Create Public Pool Tests ============
+
+    function test_CreatePublicPool() public {
+        RiskPoolFactory.PublicPoolParams memory params = RiskPoolFactory.PublicPoolParams({
+            name: "Kenya Maize Pool",
+            symbol: "mcMAIZE",
+            coverageType: RiskPool.CoverageType.DROUGHT,
+            region: "Kenya",
+            targetCapital: 500_000e6,
+            maxCapital: 2_000_000e6
+        });
+
+        address poolAddress = factory.createPublicPool(params);
 
         assertTrue(poolAddress != address(0));
         assertTrue(factory.isPool(poolAddress));
         assertEq(factory.poolCounter(), 1);
-        assertEq(factory.pools(1), poolAddress);
-    }
 
-    function test_CreatePool_SetsPoolConfigCorrectly() public {
-        vm.prank(admin);
-        address poolAddress = factory.createPool(
-            "Kenya Maize Drought Q1 2026",
-            "mKM-Q1-26",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-
+        // Verify pool configuration
         RiskPool pool = RiskPool(poolAddress);
-        assertEq(pool.poolId(), 1);
-        assertEq(pool.poolName(), "Kenya Maize Drought Q1 2026");
-        assertEq(pool.symbol(), "mKM-Q1-26");
-        assertEq(uint256(pool.coverageType()), uint256(RiskPool.CoverageType.DROUGHT));
-        assertEq(pool.region(), "Kenya");
-        assertEq(pool.targetCapital(), 500_000e6);
-        assertEq(pool.maxCapital(), 2_000_000e6);
-        assertEq(pool.platformFeePercent(), 10);
+        assertEq(pool.name(), "Kenya Maize Pool");
+        assertEq(pool.symbol(), "mcMAIZE");
+        assertEq(uint256(pool.poolType()), uint256(RiskPool.PoolType.PUBLIC));
+        assertEq(pool.minDeposit(), factory.PUBLIC_MIN_DEPOSIT());
     }
 
-    function test_CreatePool_SetsFundraisingTimesCorrectly() public {
-        uint256 startTime = block.timestamp;
-
-        vm.prank(admin);
-        address poolAddress = factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-
-        RiskPool pool = RiskPool(poolAddress);
-        assertEq(pool.fundraiseStart(), startTime);
-        assertEq(pool.fundraiseEnd(), startTime + 14 days);
-        assertEq(pool.coverageEnd(), startTime + 14 days + 180 days);
-    }
-
-    function test_CreatePool_GrantsTreasuryRole() public {
-        vm.prank(admin);
-        address poolAddress = factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-
-        RiskPool pool = RiskPool(poolAddress);
-        assertTrue(pool.hasRole(pool.TREASURY_ROLE(), treasury));
-    }
-
-    function test_CreatePool_IncrementsPoolCounter() public {
-        vm.startPrank(admin);
-
-        factory.createPool(
-            "Pool 1",
-            "P1",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-        assertEq(factory.poolCounter(), 1);
-
-        factory.createPool(
-            "Pool 2",
-            "P2",
-            RiskPool.CoverageType.FLOOD,
-            "Uganda",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-        assertEq(factory.poolCounter(), 2);
-
-        vm.stopPrank();
-    }
-
-    function test_CreatePool_AddsToAllPools() public {
-        vm.startPrank(admin);
-
-        address pool1 = factory.createPool(
-            "Pool 1",
-            "P1",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-
-        address pool2 = factory.createPool(
-            "Pool 2",
-            "P2",
-            RiskPool.CoverageType.FLOOD,
-            "Uganda",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-
-        vm.stopPrank();
-
-        address[] memory allPools = factory.getAllPools();
-        assertEq(allPools.length, 2);
-        assertEq(allPools[0], pool1);
-        assertEq(allPools[1], pool2);
-    }
-
-    function test_CreatePool_EmitsEvent() public {
-        vm.prank(admin);
+    function test_CreatePublicPool_EmitsEvent() public {
+        RiskPoolFactory.PublicPoolParams memory params = RiskPoolFactory.PublicPoolParams({
+            name: "Kenya Maize Pool",
+            symbol: "mcMAIZE",
+            coverageType: RiskPool.CoverageType.DROUGHT,
+            region: "Kenya",
+            targetCapital: 500_000e6,
+            maxCapital: 2_000_000e6
+        });
 
         vm.expectEmit(true, false, false, true);
         emit RiskPoolFactory.PoolCreated(
             1,
-            address(0), // We don't know the address beforehand
-            "Test Pool",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya"
+            address(0), // We don't know the address yet
+            RiskPool.PoolType.PUBLIC,
+            "Kenya Maize Pool",
+            "mcMAIZE",
+            address(0)
         );
-
-        factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
+        factory.createPublicPool(params);
     }
 
-    function test_CreatePool_RevertsWithEmptyName() public {
-        vm.prank(admin);
-        vm.expectRevert(RiskPoolFactory.EmptyName.selector);
-        factory.createPool(
-            "",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-    }
+    function test_CreatePublicPool_InvalidTargetCapital_Reverts() public {
+        RiskPoolFactory.PublicPoolParams memory params = RiskPoolFactory.PublicPoolParams({
+            name: "Kenya Maize Pool",
+            symbol: "mcMAIZE",
+            coverageType: RiskPool.CoverageType.DROUGHT,
+            region: "Kenya",
+            targetCapital: 10_000e6, // Below minimum
+            maxCapital: 2_000_000e6
+        });
 
-    function test_CreatePool_RevertsWithEmptyRegion() public {
-        vm.prank(admin);
-        vm.expectRevert(RiskPoolFactory.EmptyRegion.selector);
-        factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-    }
-
-    function test_CreatePool_RevertsWithTargetCapitalBelowMinimum() public {
-        vm.prank(admin);
         vm.expectRevert(RiskPoolFactory.InvalidTargetCapital.selector);
-        factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            499_000e6, // Below 500k minimum
-            2_000_000e6,
-            14 days,
-            180 days
-        );
+        factory.createPublicPool(params);
     }
 
-    function test_CreatePool_RevertsWithMaxCapitalAboveLimit() public {
-        vm.prank(admin);
-        vm.expectRevert(RiskPoolFactory.InvalidMaxCapital.selector);
-        factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_001e6, // Above 2M limit
-            14 days,
-            180 days
-        );
-    }
+    // ============ Create Private Pool Tests ============
 
-    function test_CreatePool_RevertsWithTargetAboveMax() public {
-        vm.prank(admin);
-        vm.expectRevert(RiskPoolFactory.InvalidTargetCapital.selector);
-        factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            1_500_000e6,
-            1_000_000e6, // Max below target
-            14 days,
-            180 days
-        );
-    }
+    function test_CreatePrivatePool() public {
+        RiskPoolFactory.PrivatePoolParams memory params = RiskPoolFactory.PrivatePoolParams({
+            name: "UAP Institutional Pool",
+            symbol: "uapKENYA",
+            coverageType: RiskPool.CoverageType.DROUGHT,
+            region: "East Africa",
+            poolOwner: institutionalInvestor,
+            minDeposit: 500_000e6,
+            maxDeposit: 5_000_000e6,
+            targetCapital: 5_000_000e6,
+            maxCapital: 20_000_000e6,
+            productBuilder: productBuilder
+        });
 
-    function test_CreatePool_RevertsWithFundraiseDurationTooShort() public {
-        vm.prank(admin);
-        vm.expectRevert(RiskPoolFactory.InvalidFundraiseDuration.selector);
-        factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            6 days, // Below 7 day minimum
-            180 days
-        );
-    }
+        address poolAddress = factory.createPrivatePool(params);
 
-    function test_CreatePool_RevertsWithFundraiseDurationTooLong() public {
-        vm.prank(admin);
-        vm.expectRevert(RiskPoolFactory.InvalidFundraiseDuration.selector);
-        factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            31 days, // Above 30 day maximum
-            180 days
-        );
-    }
+        assertTrue(poolAddress != address(0));
+        assertTrue(factory.isPool(poolAddress));
 
-    function test_CreatePool_RevertsWithCoverageDurationTooShort() public {
-        vm.prank(admin);
-        vm.expectRevert(RiskPoolFactory.InvalidCoverageDuration.selector);
-        factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            29 days // Below 30 day minimum
-        );
-    }
-
-    function test_CreatePool_RevertsWithCoverageDurationTooLong() public {
-        vm.prank(admin);
-        vm.expectRevert(RiskPoolFactory.InvalidCoverageDuration.selector);
-        factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            366 days // Above 365 day maximum
-        );
-    }
-
-    function test_CreatePool_RevertsWhenUnauthorized() public {
-        vm.prank(nonAdmin);
-        vm.expectRevert();
-        factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-    }
-
-    function test_CreatePool_AllCoverageTypes() public {
-        vm.startPrank(admin);
-
-        address pool1 = factory.createPool(
-            "Drought Pool",
-            "DP",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-
-        address pool2 = factory.createPool(
-            "Flood Pool",
-            "FP",
-            RiskPool.CoverageType.FLOOD,
-            "Uganda",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-
-        address pool3 = factory.createPool(
-            "Both Pool",
-            "BP",
-            RiskPool.CoverageType.BOTH,
-            "Tanzania",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-
-        vm.stopPrank();
-
-        assertEq(uint256(RiskPool(pool1).coverageType()), uint256(RiskPool.CoverageType.DROUGHT));
-        assertEq(uint256(RiskPool(pool2).coverageType()), uint256(RiskPool.CoverageType.FLOOD));
-        assertEq(uint256(RiskPool(pool3).coverageType()), uint256(RiskPool.CoverageType.BOTH));
-    }
-
-    // ============ Created Pool Functionality Tests ============
-
-    function test_CreatedPool_AcceptsDeposits() public {
-        vm.prank(admin);
-        address poolAddress = factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-
+        // Verify pool configuration
         RiskPool pool = RiskPool(poolAddress);
-
-        vm.startPrank(investor1);
-        usdc.approve(poolAddress, 100_000e6);
-        pool.deposit(100_000e6);
-        vm.stopPrank();
-
-        assertEq(pool.balanceOf(investor1), 100_000e6);
+        assertEq(uint256(pool.poolType()), uint256(RiskPool.PoolType.PRIVATE));
+        assertEq(pool.minDeposit(), 500_000e6);
+        assertEq(pool.poolOwner(), institutionalInvestor);
     }
 
-    function test_CreatedPool_IndependentFromOthers() public {
-        vm.startPrank(admin);
+    function test_CreatePrivatePool_InvalidMinDeposit_Reverts() public {
+        RiskPoolFactory.PrivatePoolParams memory params = RiskPoolFactory.PrivatePoolParams({
+            name: "UAP Institutional Pool",
+            symbol: "uapKENYA",
+            coverageType: RiskPool.CoverageType.DROUGHT,
+            region: "East Africa",
+            poolOwner: institutionalInvestor,
+            minDeposit: 10_000e6, // Below private minimum
+            maxDeposit: 5_000_000e6,
+            targetCapital: 5_000_000e6,
+            maxCapital: 20_000_000e6,
+            productBuilder: productBuilder
+        });
 
-        address pool1Addr = factory.createPool(
-            "Pool 1",
-            "P1",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-
-        address pool2Addr = factory.createPool(
-            "Pool 2",
-            "P2",
-            RiskPool.CoverageType.FLOOD,
-            "Uganda",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-
-        vm.stopPrank();
-
-        RiskPool pool1 = RiskPool(pool1Addr);
-        RiskPool pool2 = RiskPool(pool2Addr);
-
-        // Deposit to pool1 only
-        vm.startPrank(investor1);
-        usdc.approve(pool1Addr, 100_000e6);
-        pool1.deposit(100_000e6);
-        vm.stopPrank();
-
-        assertEq(pool1.balanceOf(investor1), 100_000e6);
-        assertEq(pool2.balanceOf(investor1), 0);
-        assertEq(usdc.balanceOf(pool1Addr), 100_000e6);
-        assertEq(usdc.balanceOf(pool2Addr), 0);
+        vm.expectRevert(RiskPoolFactory.InvalidMinDeposit.selector);
+        factory.createPrivatePool(params);
     }
 
-    // ============ Set Platform Fee Tests ============
+    // ============ Create Mutual Pool Tests ============
 
-    function test_SetDefaultPlatformFee_Success() public {
-        vm.prank(admin);
-        factory.setDefaultPlatformFee(15);
+    function test_CreateMutualPool() public {
+        RiskPoolFactory.MutualPoolParams memory params = RiskPoolFactory.MutualPoolParams({
+            name: "KFA Cooperative Pool",
+            symbol: "kfaCOOP",
+            coverageType: RiskPool.CoverageType.FLOOD,
+            region: "Western Kenya",
+            poolOwner: treasury,
+            memberContribution: 1_000e6,
+            targetCapital: 200_000e6,
+            maxCapital: 1_000_000e6
+        });
 
-        assertEq(factory.defaultPlatformFee(), 15);
-    }
+        address poolAddress = factory.createMutualPool(params);
 
-    function test_SetDefaultPlatformFee_EmitsEvent() public {
-        vm.prank(admin);
-        vm.expectEmit(true, true, true, true);
-        emit RiskPoolFactory.PlatformFeeUpdated(15);
-        factory.setDefaultPlatformFee(15);
-    }
+        assertTrue(poolAddress != address(0));
+        assertTrue(factory.isPool(poolAddress));
 
-    function test_SetDefaultPlatformFee_AppliestoNewPools() public {
-        vm.prank(admin);
-        factory.setDefaultPlatformFee(15);
-
-        vm.prank(admin);
-        address poolAddress = factory.createPool(
-            "Test Pool",
-            "TEST",
-            RiskPool.CoverageType.DROUGHT,
-            "Kenya",
-            500_000e6,
-            2_000_000e6,
-            14 days,
-            180 days
-        );
-
+        // Verify pool configuration
         RiskPool pool = RiskPool(poolAddress);
-        assertEq(pool.platformFeePercent(), 15);
+        assertEq(uint256(pool.poolType()), uint256(RiskPool.PoolType.MUTUAL));
     }
 
-    function test_SetDefaultPlatformFee_RevertsBelowMinimum() public {
-        vm.prank(admin);
-        vm.expectRevert(RiskPoolFactory.InvalidPlatformFee.selector);
-        factory.setDefaultPlatformFee(4);
+    // ============ Pool Tracking Tests ============
+
+    function test_GetPoolsByType() public {
+        // Create one of each type
+        factory.createPublicPool(RiskPoolFactory.PublicPoolParams({
+            name: "Public Pool",
+            symbol: "PUB",
+            coverageType: RiskPool.CoverageType.DROUGHT,
+            region: "Kenya",
+            targetCapital: 500_000e6,
+            maxCapital: 2_000_000e6
+        }));
+
+        factory.createPrivatePool(RiskPoolFactory.PrivatePoolParams({
+            name: "Private Pool",
+            symbol: "PRIV",
+            coverageType: RiskPool.CoverageType.DROUGHT,
+            region: "East Africa",
+            poolOwner: institutionalInvestor,
+            minDeposit: 500_000e6,
+            maxDeposit: 5_000_000e6,
+            targetCapital: 5_000_000e6,
+            maxCapital: 20_000_000e6,
+            productBuilder: productBuilder
+        }));
+
+        factory.createMutualPool(RiskPoolFactory.MutualPoolParams({
+            name: "Mutual Pool",
+            symbol: "MUT",
+            coverageType: RiskPool.CoverageType.FLOOD,
+            region: "West Kenya",
+            poolOwner: treasury,
+            memberContribution: 1_000e6,
+            targetCapital: 200_000e6,
+            maxCapital: 1_000_000e6
+        }));
+
+        address[] memory publicPools = factory.getPoolsByType(RiskPool.PoolType.PUBLIC);
+        address[] memory privatePools = factory.getPoolsByType(RiskPool.PoolType.PRIVATE);
+        address[] memory mutualPools = factory.getPoolsByType(RiskPool.PoolType.MUTUAL);
+
+        assertEq(publicPools.length, 1);
+        assertEq(privatePools.length, 1);
+        assertEq(mutualPools.length, 1);
     }
 
-    function test_SetDefaultPlatformFee_RevertsAboveMaximum() public {
-        vm.prank(admin);
-        vm.expectRevert(RiskPoolFactory.InvalidPlatformFee.selector);
-        factory.setDefaultPlatformFee(21);
+    function test_GetPoolsByOwner() public {
+        // Create multiple pools for same owner
+        factory.createPrivatePool(RiskPoolFactory.PrivatePoolParams({
+            name: "Pool 1",
+            symbol: "P1",
+            coverageType: RiskPool.CoverageType.DROUGHT,
+            region: "East Africa",
+            poolOwner: institutionalInvestor,
+            minDeposit: 500_000e6,
+            maxDeposit: 5_000_000e6,
+            targetCapital: 5_000_000e6,
+            maxCapital: 20_000_000e6,
+            productBuilder: productBuilder
+        }));
+
+        factory.createPrivatePool(RiskPoolFactory.PrivatePoolParams({
+            name: "Pool 2",
+            symbol: "P2",
+            coverageType: RiskPool.CoverageType.FLOOD,
+            region: "West Africa",
+            poolOwner: institutionalInvestor,
+            minDeposit: 500_000e6,
+            maxDeposit: 5_000_000e6,
+            targetCapital: 5_000_000e6,
+            maxCapital: 20_000_000e6,
+            productBuilder: productBuilder
+        }));
+
+        address[] memory ownerPools = factory.getPoolsByOwner(institutionalInvestor);
+        assertEq(ownerPools.length, 2);
     }
 
-    function test_SetDefaultPlatformFee_RevertsWhenUnauthorized() public {
-        vm.prank(nonAdmin);
-        vm.expectRevert();
-        factory.setDefaultPlatformFee(15);
+    function test_GetAllPools() public {
+        // Create multiple pools
+        factory.createPublicPool(RiskPoolFactory.PublicPoolParams({
+            name: "Pool 1",
+            symbol: "P1",
+            coverageType: RiskPool.CoverageType.DROUGHT,
+            region: "Kenya",
+            targetCapital: 500_000e6,
+            maxCapital: 2_000_000e6
+        }));
+
+        factory.createPublicPool(RiskPoolFactory.PublicPoolParams({
+            name: "Pool 2",
+            symbol: "P2",
+            coverageType: RiskPool.CoverageType.FLOOD,
+            region: "Tanzania",
+            targetCapital: 500_000e6,
+            maxCapital: 2_000_000e6
+        }));
+
+        address[] memory allPoolsList = factory.getAllPools();
+        assertEq(allPoolsList.length, 2);
     }
 
-    function test_SetDefaultPlatformFee_AtBoundaries() public {
-        vm.startPrank(admin);
-
-        factory.setDefaultPlatformFee(5);
-        assertEq(factory.defaultPlatformFee(), 5);
-
-        factory.setDefaultPlatformFee(20);
-        assertEq(factory.defaultPlatformFee(), 20);
-
-        vm.stopPrank();
-    }
-
-    // ============ View Function Tests ============
-
-    function test_GetAllPools_ReturnsEmptyInitially() public view {
-        address[] memory pools = factory.getAllPools();
-        assertEq(pools.length, 0);
-    }
-
-    function test_GetAllPools_ReturnsAllCreatedPools() public {
-        vm.startPrank(admin);
-
-        address pool1 = factory.createPool(
-            "Pool 1", "P1", RiskPool.CoverageType.DROUGHT, "Kenya",
-            500_000e6, 2_000_000e6, 14 days, 180 days
-        );
-
-        address pool2 = factory.createPool(
-            "Pool 2", "P2", RiskPool.CoverageType.FLOOD, "Uganda",
-            500_000e6, 2_000_000e6, 14 days, 180 days
-        );
-
-        address pool3 = factory.createPool(
-            "Pool 3", "P3", RiskPool.CoverageType.BOTH, "Tanzania",
-            500_000e6, 2_000_000e6, 14 days, 180 days
-        );
-
-        vm.stopPrank();
-
-        address[] memory pools = factory.getAllPools();
-        assertEq(pools.length, 3);
-        assertEq(pools[0], pool1);
-        assertEq(pools[1], pool2);
-        assertEq(pools[2], pool3);
-    }
-
-    function test_GetActivePools_ReturnsOnlyActive() public {
-        vm.prank(admin);
-        address poolAddr = factory.createPool(
-            "Test Pool", "TEST", RiskPool.CoverageType.DROUGHT, "Kenya",
-            500_000e6, 2_000_000e6, 14 days, 180 days
-        );
-
-        // Before activation
-        address[] memory activeBefore = factory.getActivePools();
-        assertEq(activeBefore.length, 0);
-
-        // Activate pool
-        _fundAndActivatePool(poolAddr);
-
-        // After activation
-        address[] memory activeAfter = factory.getActivePools();
-        assertEq(activeAfter.length, 1);
-        assertEq(activeAfter[0], poolAddr);
-    }
-
-    function test_GetPoolsByStatus_FiltersCorrectly() public {
-        vm.startPrank(admin);
-
-        address pool1 = factory.createPool(
-            "Pool 1", "P1", RiskPool.CoverageType.DROUGHT, "Kenya",
-            500_000e6, 2_000_000e6, 14 days, 180 days
-        );
-
-        address pool2 = factory.createPool(
-            "Pool 2", "P2", RiskPool.CoverageType.FLOOD, "Uganda",
-            500_000e6, 2_000_000e6, 14 days, 180 days
-        );
-
-        vm.stopPrank();
-
-        // Both should be FUNDRAISING
-        address[] memory fundraising = factory.getPoolsByStatus(RiskPool.PoolStatus.FUNDRAISING);
-        assertEq(fundraising.length, 2);
-
-        // Activate pool1
-        _fundAndActivatePool(pool1);
-
-        // Check again
-        fundraising = factory.getPoolsByStatus(RiskPool.PoolStatus.FUNDRAISING);
-        assertEq(fundraising.length, 1);
-        assertEq(fundraising[0], pool2);
-
-        address[] memory active = factory.getPoolsByStatus(RiskPool.PoolStatus.ACTIVE);
-        assertEq(active.length, 1);
-        assertEq(active[0], pool1);
-    }
-
-    function test_GetPoolMetadata_ReturnsCorrectData() public {
-        vm.prank(admin);
-        address poolAddr = factory.createPool(
-            "Kenya Maize Q1 2026", "mKM-Q1", RiskPool.CoverageType.DROUGHT, "Kenya",
-            500_000e6, 2_000_000e6, 14 days, 180 days
-        );
+    function test_GetPoolMetadata() public {
+        factory.createPublicPool(RiskPoolFactory.PublicPoolParams({
+            name: "Kenya Maize Pool",
+            symbol: "mcMAIZE",
+            coverageType: RiskPool.CoverageType.DROUGHT,
+            region: "Kenya",
+            targetCapital: 500_000e6,
+            maxCapital: 2_000_000e6
+        }));
 
         RiskPoolFactory.PoolMetadata memory metadata = factory.getPoolMetadata(1);
 
-        assertEq(metadata.poolAddress, poolAddr);
         assertEq(metadata.poolId, 1);
-        assertEq(metadata.name, "Kenya Maize Q1 2026");
-        assertEq(uint256(metadata.coverageType), uint256(RiskPool.CoverageType.DROUGHT));
+        assertEq(metadata.name, "Kenya Maize Pool");
         assertEq(metadata.region, "Kenya");
-        assertEq(metadata.createdAt, block.timestamp);
-        assertEq(uint256(metadata.status), uint256(RiskPool.PoolStatus.FUNDRAISING));
+        assertEq(uint256(metadata.poolType), uint256(RiskPool.PoolType.PUBLIC));
     }
 
-    function test_GetPoolMetadata_RevertsForNonExistent() public {
+    function test_GetPoolMetadata_NotFound_Reverts() public {
         vm.expectRevert(RiskPoolFactory.PoolNotFound.selector);
         factory.getPoolMetadata(999);
     }
 
-    function test_GetPoolById_ReturnsCorrectAddress() public {
-        vm.prank(admin);
-        address poolAddr = factory.createPool(
-            "Test Pool", "TEST", RiskPool.CoverageType.DROUGHT, "Kenya",
-            500_000e6, 2_000_000e6, 14 days, 180 days
-        );
+    // ============ Access Control Tests ============
 
-        assertEq(factory.getPoolById(1), poolAddr);
+    function test_OnlyAdmin_CanCreatePool() public {
+        RiskPoolFactory.PublicPoolParams memory params = RiskPoolFactory.PublicPoolParams({
+            name: "Test Pool",
+            symbol: "TEST",
+            coverageType: RiskPool.CoverageType.DROUGHT,
+            region: "Kenya",
+            targetCapital: 500_000e6,
+            maxCapital: 2_000_000e6
+        });
+
+        vm.prank(investor1);
+        vm.expectRevert();
+        factory.createPublicPool(params);
     }
 
-    function test_GetPoolById_ReturnsZeroForNonExistent() public view {
-        assertEq(factory.getPoolById(999), address(0));
+    function test_SetDefaultDistributor() public {
+        address newDistributor = address(0x123);
+        factory.setDefaultDistributor(newDistributor);
+        assertEq(factory.defaultDistributor(), newDistributor);
     }
 
-    function test_GetPoolCount_ReturnsCorrectCount() public {
-        assertEq(factory.getPoolCount(), 0);
+    function test_SetPoolImplementation() public {
+        RiskPool newImpl = new RiskPool();
+        factory.setPoolImplementation(address(newImpl));
+        assertEq(factory.poolImplementation(), address(newImpl));
+    }
 
-        vm.startPrank(admin);
+    // ============ Upgrade Tests ============
 
-        factory.createPool(
-            "Pool 1", "P1", RiskPool.CoverageType.DROUGHT, "Kenya",
-            500_000e6, 2_000_000e6, 14 days, 180 days
-        );
-        assertEq(factory.getPoolCount(), 1);
+    function test_Upgrade_OnlyUpgrader() public {
+        RiskPoolFactory newImpl = new RiskPoolFactory();
 
-        factory.createPool(
-            "Pool 2", "P2", RiskPool.CoverageType.FLOOD, "Uganda",
-            500_000e6, 2_000_000e6, 14 days, 180 days
-        );
-        assertEq(factory.getPoolCount(), 2);
+        vm.prank(investor1);
+        vm.expectRevert();
+        factory.upgradeToAndCall(address(newImpl), "");
 
+        // Admin can upgrade
+        factory.upgradeToAndCall(address(newImpl), "");
+    }
+
+    function test_Upgrade_PreservesState() public {
+        // Create a pool
+        factory.createPublicPool(RiskPoolFactory.PublicPoolParams({
+            name: "Test Pool",
+            symbol: "TEST",
+            coverageType: RiskPool.CoverageType.DROUGHT,
+            region: "Kenya",
+            targetCapital: 500_000e6,
+            maxCapital: 2_000_000e6
+        }));
+
+        uint256 poolCountBefore = factory.poolCounter();
+
+        // Upgrade
+        RiskPoolFactory newImpl = new RiskPoolFactory();
+        factory.upgradeToAndCall(address(newImpl), "");
+
+        // State preserved
+        assertEq(factory.poolCounter(), poolCountBefore);
+        assertEq(factory.usdc(), address(usdc));
+    }
+
+    // ============ Pool Deposits Work ============
+
+    function test_CreatedPool_AcceptsDeposits() public {
+        address poolAddress = factory.createPublicPool(RiskPoolFactory.PublicPoolParams({
+            name: "Kenya Maize Pool",
+            symbol: "mcMAIZE",
+            coverageType: RiskPool.CoverageType.DROUGHT,
+            region: "Kenya",
+            targetCapital: 500_000e6,
+            maxCapital: 2_000_000e6
+        }));
+
+        RiskPool pool = RiskPool(poolAddress);
+        uint256 depositAmount = 1_000e6;
+
+        vm.startPrank(investor1);
+        usdc.approve(poolAddress, depositAmount);
+        pool.deposit(depositAmount);
         vm.stopPrank();
-    }
 
-    function test_IsValidPool_ReturnsCorrectly() public {
-        vm.prank(admin);
-        address poolAddr = factory.createPool(
-            "Test Pool", "TEST", RiskPool.CoverageType.DROUGHT, "Kenya",
-            500_000e6, 2_000_000e6, 14 days, 180 days
-        );
-
-        assertTrue(factory.isValidPool(poolAddr));
-        assertFalse(factory.isValidPool(address(0x1234)));
-    }
-
-    // ============ Fuzz Tests ============
-
-    function testFuzz_CreatePool_ValidDurations(
-        uint256 fundraiseDuration,
-        uint256 coverageDuration
-    ) public {
-        fundraiseDuration = bound(fundraiseDuration, 7 days, 30 days);
-        coverageDuration = bound(coverageDuration, 30 days, 365 days);
-
-        vm.prank(admin);
-        address poolAddr = factory.createPool(
-            "Test Pool", "TEST", RiskPool.CoverageType.DROUGHT, "Kenya",
-            500_000e6, 2_000_000e6, fundraiseDuration, coverageDuration
-        );
-
-        RiskPool pool = RiskPool(poolAddr);
-        assertEq(pool.fundraiseEnd() - pool.fundraiseStart(), fundraiseDuration);
-    }
-
-    function testFuzz_CreatePool_ValidCapitals(
-        uint256 targetCapital,
-        uint256 maxCapital
-    ) public {
-        targetCapital = bound(targetCapital, 500_000e6, 2_000_000e6);
-        maxCapital = bound(maxCapital, targetCapital, 2_000_000e6);
-
-        vm.prank(admin);
-        address poolAddr = factory.createPool(
-            "Test Pool", "TEST", RiskPool.CoverageType.DROUGHT, "Kenya",
-            targetCapital, maxCapital, 14 days, 180 days
-        );
-
-        RiskPool pool = RiskPool(poolAddr);
-        assertEq(pool.targetCapital(), targetCapital);
-        assertEq(pool.maxCapital(), maxCapital);
-    }
-
-    // ============ Helper Functions ============
-
-    function _fundAndActivatePool(address poolAddr) internal {
-        RiskPool pool = RiskPool(poolAddr);
-
-        // Create investors and fund to target
-        for (uint256 i = 0; i < 5; i++) {
-            address investor = makeAddr(string(abi.encodePacked("funder", i)));
-            usdc.mint(investor, 100_000e6);
-            vm.startPrank(investor);
-            usdc.approve(poolAddr, 100_000e6);
-            pool.deposit(100_000e6);
-            vm.stopPrank();
-        }
-
-        // Fast forward past fundraising
-        vm.warp(block.timestamp + 15 days);
-        
-        // The RiskPool constructor grants DEFAULT_ADMIN_ROLE to msg.sender (factory)
-        // and ADMIN_ROLE to msg.sender (factory)
-        // So the factory address has ADMIN_ROLE and can activate the pool
-        // We can call activatePool from the factory, but factory has no such function
-        // So we need to grant ADMIN_ROLE to our admin address first
-        
-        // Cache the role before prank (view calls can consume prank in some scenarios)
-        bytes32 adminRole = pool.ADMIN_ROLE();
-        
-        // Factory has DEFAULT_ADMIN_ROLE on the pool, so it can grant ADMIN_ROLE
-        vm.prank(address(factory));
-        pool.grantRole(adminRole, admin);
-        
-        vm.prank(admin);
-        pool.activatePool();
+        assertEq(pool.balanceOf(investor1), depositAmount);
     }
 }
