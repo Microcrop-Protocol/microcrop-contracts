@@ -1,42 +1,55 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
  * @title RiskPool
  * @author MicroCrop Protocol
- * @notice ERC20 token representing fractional ownership of an insurance risk pool
- * @dev Each pool represents a specific coverage period, region, and coverage type.
- *      Investors deposit USDC during fundraising, receive tokens 1:1, and can redeem
- *      after the pool expires. Token value fluctuates based on premiums collected
- *      and payouts made.
+ * @notice Upgradeable ERC20 LP token representing fractional ownership of an insurance risk pool
+ * @dev Implements the institutional LP token model with three pool types:
+ *      - PUBLIC: Open to anyone, liquid, tradeable
+ *      - PRIVATE: Restricted to institutions, high minimums
+ *      - MUTUAL: Cooperative-owned, members only
  *
- * State Machine:
- *   FUNDRAISING → ACTIVE → CLOSED → EXPIRED
+ *      Token price is NAV-based: Token Price = Pool Value / Total Supply
+ *      LPs deposit/withdraw at current NAV without diluting other holders.
  *
- * Security Features:
- * - ReentrancyGuard on all fund-moving functions
- * - Pausable for emergencies
- * - Role-based access control
- * - SafeERC20 for all token transfers
+ * Revenue Distribution (per premium):
+ *   - LP Pool:        70% (increases token value)
+ *   - Product Builder: 12% (institution fee)
+ *   - Protocol:       10% (MicroCrop platform)
+ *   - Distributor:     8% (cooperative/agent)
+ *
+ * Upgradeability:
+ *   - Uses UUPS proxy pattern
+ *   - Only UPGRADER_ROLE can authorize upgrades
+ *   - Storage gaps for future upgrades
  */
-contract RiskPool is ERC20, AccessControl, ReentrancyGuard, Pausable {
+contract RiskPool is
+    Initializable,
+    ERC20Upgradeable,
+    AccessControlUpgradeable,
+    ReentrancyGuard,
+    PausableUpgradeable,
+    UUPSUpgradeable
+{
     using SafeERC20 for IERC20;
 
     // ============ Enums ============
 
-    /// @notice Pool lifecycle status
-    enum PoolStatus {
-        FUNDRAISING,    // Accepting investor deposits
-        ACTIVE,         // Underwriting policies, collecting premiums
-        CLOSED,         // No new policies, existing policies still active
-        EXPIRED         // All policies expired, redemption available
+    /// @notice Pool type determines access and liquidity rules
+    enum PoolType {
+        PUBLIC,     // Open to anyone with USDC
+        PRIVATE,    // Restricted to approved institutions
+        MUTUAL      // Cooperative members only
     }
 
     /// @notice Coverage type for the pool
@@ -48,336 +61,500 @@ contract RiskPool is ERC20, AccessControl, ReentrancyGuard, Pausable {
 
     // ============ Roles ============
 
-    /// @notice Admin role for pool management operations
+    /// @notice Admin role for pool management
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
 
     /// @notice Treasury role for premium/payout operations
     bytes32 public constant TREASURY_ROLE = keccak256("TREASURY_ROLE");
 
+    /// @notice Depositor role for private/mutual pools (whitelisted)
+    bytes32 public constant DEPOSITOR_ROLE = keccak256("DEPOSITOR_ROLE");
+
+    /// @notice Upgrader role for UUPS upgrades
+    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+
     // ============ Constants ============
-
-    /// @notice Minimum investment per investor (1,000 USDC)
-    uint256 public constant MIN_INVESTMENT = 1_000e6;
-
-    /// @notice Maximum investment per investor (100,000 USDC)
-    uint256 public constant MAX_INVESTMENT = 100_000e6;
 
     /// @notice Precision for token value calculations (18 decimals)
     uint256 public constant PRECISION = 1e18;
 
-    // ============ Immutable State ============
+    /// @notice Revenue share for LP pool (70%)
+    uint256 public constant LP_SHARE_BPS = 7000;
+
+    /// @notice Revenue share for product builder (12%)
+    uint256 public constant BUILDER_SHARE_BPS = 1200;
+
+    /// @notice Revenue share for protocol (10%)
+    uint256 public constant PROTOCOL_SHARE_BPS = 1000;
+
+    /// @notice Revenue share for distributor (8%)
+    uint256 public constant DISTRIBUTOR_SHARE_BPS = 800;
+
+    /// @notice Basis points denominator
+    uint256 public constant BPS_DENOMINATOR = 10000;
+
+    // ============ Storage ============
 
     /// @notice USDC token contract
-    IERC20 public immutable USDC;
+    IERC20 public usdc;
 
     /// @notice Unique pool identifier
-    uint256 public immutable poolId;
+    uint256 public poolId;
 
-    // ============ Pool Configuration ============
+    /// @notice Pool type (PUBLIC, PRIVATE, MUTUAL)
+    PoolType public poolType;
 
-    /// @notice Human-readable pool name (e.g., "Kenya Maize Drought Q1 2026")
+    /// @notice Human-readable pool name
     string public poolName;
 
-    /// @notice Current pool status
-    PoolStatus public status;
+    /// @notice Pool owner (institution address for private pools, zero for public)
+    address public poolOwner;
 
     /// @notice Coverage type for this pool
     CoverageType public coverageType;
 
-    /// @notice Geographic region covered (e.g., "Kenya")
+    /// @notice Geographic region covered
     string public region;
 
-    // ============ Timing ============
+    /// @notice Minimum deposit amount
+    uint256 public minDeposit;
 
-    /// @notice Timestamp when fundraising begins
-    uint256 public fundraiseStart;
+    /// @notice Maximum deposit per investor
+    uint256 public maxDeposit;
 
-    /// @notice Timestamp when fundraising ends
-    uint256 public fundraiseEnd;
-
-    /// @notice Timestamp when coverage period starts (set on activation)
-    uint256 public coverageStart;
-
-    /// @notice Timestamp when coverage period ends
-    uint256 public coverageEnd;
-
-    // ============ Capacity Limits ============
-
-    /// @notice Target USDC to raise (minimum to activate)
+    /// @notice Target pool capital
     uint256 public targetCapital;
 
-    /// @notice Maximum USDC accepted
+    /// @notice Maximum pool capital
     uint256 public maxCapital;
 
-    // ============ Financial Tracking ============
+    /// @notice Whether deposits are currently accepted
+    bool public depositsOpen;
 
-    /// @notice Total net premiums collected (after platform fee)
-    uint256 public totalPremiumsCollected;
+    /// @notice Whether withdrawals are currently allowed
+    bool public withdrawalsOpen;
 
-    /// @notice Total payouts made for claims
-    uint256 public totalPayoutsMade;
+    /// @notice Total premiums collected (gross)
+    uint256 public totalPremiums;
 
-    /// @notice Platform fee percentage (default 10%)
-    uint256 public platformFeePercent;
+    /// @notice Total payouts made
+    uint256 public totalPayouts;
 
-    // ============ Investor Tracking ============
+    /// @notice Active exposure (sum insured of active policies)
+    uint256 public activeExposure;
 
-    /// @notice USDC deposited by each investor
-    mapping(address => uint256) public investorDeposits;
+    /// @notice Product builder address (receives 12% of premiums)
+    address public productBuilder;
 
-    /// @notice Whether investor has redeemed their tokens
-    mapping(address => bool) public hasRedeemed;
+    /// @notice Protocol treasury address (receives 10% of premiums)
+    address public protocolTreasury;
+
+    /// @notice Default distributor address (receives 8% of premiums)
+    address public defaultDistributor;
+
+    /// @notice Total USDC deposited by each investor
+    mapping(address => uint256) public totalDeposited;
 
     /// @notice Number of unique investors
     uint256 public investorCount;
 
-    // ============ Policy Tracking ============
-
-    /// @notice Array of policy IDs in this pool
-    uint256[] public policyIds;
-
-    /// @notice Whether a policy belongs to this pool
-    mapping(uint256 => bool) public isPolicyInPool;
+    /// @notice Storage gap for future upgrades
+    uint256[40] private __gap;
 
     // ============ Events ============
 
-    /// @notice Emitted when an investor deposits USDC
+    /// @notice Emitted when LP deposits USDC
     event Deposited(
         address indexed investor,
-        uint256 amount,
-        uint256 tokensIssued
+        uint256 usdcAmount,
+        uint256 tokensMinted,
+        uint256 tokenPrice
     );
 
-    /// @notice Emitted when an investor redeems tokens for USDC
-    event Redeemed(
+    /// @notice Emitted when LP withdraws USDC
+    event Withdrawn(
         address indexed investor,
         uint256 tokensBurned,
-        uint256 usdcReceived
+        uint256 usdcReceived,
+        uint256 tokenPrice
     );
 
-    /// @notice Emitted when premium is received for a policy
-    event PremiumReceived(
+    /// @notice Emitted when premium is collected
+    event PremiumCollected(
         uint256 indexed policyId,
         uint256 grossAmount,
-        uint256 netAmount
+        uint256 lpShare,
+        uint256 builderShare,
+        uint256 protocolShare,
+        uint256 distributorShare
     );
 
-    /// @notice Emitted when a payout is processed for a claim
+    /// @notice Emitted when payout is processed
     event PayoutProcessed(
         uint256 indexed policyId,
         uint256 amount
     );
 
-    /// @notice Emitted when pool transitions to ACTIVE
-    event PoolActivated(
-        uint256 timestamp,
-        uint256 totalRaised
+    /// @notice Emitted when exposure changes
+    event ExposureUpdated(
+        uint256 indexed policyId,
+        int256 delta,
+        uint256 newTotalExposure
     );
 
-    /// @notice Emitted when pool transitions to CLOSED
-    event PoolClosed(uint256 timestamp);
+    /// @notice Emitted when deposit status changes
+    event DepositsStatusChanged(bool open);
 
-    /// @notice Emitted when pool transitions to EXPIRED
-    event PoolExpired(uint256 timestamp);
-
-    /// @notice Emitted when platform fee is updated
-    event PlatformFeeUpdated(uint256 newFee);
+    /// @notice Emitted when withdrawal status changes
+    event WithdrawalsStatusChanged(bool open);
 
     // ============ Errors ============
 
     error ZeroAddress();
     error ZeroAmount();
-    error InvalidTargetCapital();
-    error InvalidMaxCapital();
-    error InvalidFundraiseDuration();
-    error InvalidCoverageDuration();
-    error InvalidPoolStatus();
-    error FundraisingNotStarted();
-    error FundraisingEnded();
-    error BelowMinimumInvestment();
-    error ExceedsMaximumInvestment();
+    error InvalidPoolType();
+    error InvalidAmount();
+    error DepositsNotOpen();
+    error WithdrawalsNotOpen();
+    error BelowMinimumDeposit();
+    error ExceedsMaximumDeposit();
     error ExceedsPoolCapacity();
     error InsufficientBalance();
+    error InsufficientLiquidity();
     error InsufficientTokens();
-    error FundraisingNotEnded();
-    error TargetCapitalNotMet();
-    error CoverageNotEnded();
-    error PolicyAlreadyInPool();
-    error PolicyNotInPool();
-    error InvalidPlatformFee();
-    error AlreadyRedeemed();
+    error NotAuthorized();
+    error InvalidRecipient();
 
     // ============ Structs ============
 
-    /// @notice Configuration struct for pool creation (avoids stack too deep)
+    /// @notice Configuration struct for pool initialization
     struct PoolConfig {
         address usdc;
         uint256 poolId;
         string name;
         string symbol;
+        PoolType poolType;
         CoverageType coverageType;
         string region;
+        address poolOwner;
+        uint256 minDeposit;
+        uint256 maxDeposit;
         uint256 targetCapital;
         uint256 maxCapital;
-        uint256 fundraiseStart;
-        uint256 fundraiseEnd;
-        uint256 coverageEnd;
-        uint256 platformFeePercent;
+        address productBuilder;
+        address protocolTreasury;
+        address defaultDistributor;
     }
 
     // ============ Constructor ============
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    // ============ Initializer ============
+
     /**
-     * @notice Create a new RiskPool
+     * @notice Initialize the pool (replaces constructor)
      * @param config Pool configuration struct
      */
-    constructor(PoolConfig memory config) ERC20(config.name, config.symbol) {
+    function initialize(PoolConfig memory config) external initializer {
         if (config.usdc == address(0)) revert ZeroAddress();
-        if (config.targetCapital == 0) revert InvalidTargetCapital();
-        if (config.maxCapital < config.targetCapital) revert InvalidMaxCapital();
-        if (config.fundraiseEnd <= config.fundraiseStart) revert InvalidFundraiseDuration();
-        if (config.coverageEnd <= config.fundraiseEnd) revert InvalidCoverageDuration();
-        if (config.platformFeePercent > 20) revert InvalidPlatformFee();
+        if (config.protocolTreasury == address(0)) revert ZeroAddress();
+        if (config.targetCapital == 0) revert InvalidAmount();
+        if (config.maxCapital < config.targetCapital) revert InvalidAmount();
+        if (config.minDeposit == 0) revert InvalidAmount();
+        if (config.maxDeposit < config.minDeposit) revert InvalidAmount();
 
-        USDC = IERC20(config.usdc);
+        __ERC20_init(config.name, config.symbol);
+        __AccessControl_init();
+        __Pausable_init();
+
+        usdc = IERC20(config.usdc);
         poolId = config.poolId;
+        poolType = config.poolType;
         poolName = config.name;
         coverageType = config.coverageType;
         region = config.region;
+        poolOwner = config.poolOwner;
+        minDeposit = config.minDeposit;
+        maxDeposit = config.maxDeposit;
         targetCapital = config.targetCapital;
         maxCapital = config.maxCapital;
-        fundraiseStart = config.fundraiseStart;
-        fundraiseEnd = config.fundraiseEnd;
-        coverageEnd = config.coverageEnd;
-        platformFeePercent = config.platformFeePercent;
+        productBuilder = config.productBuilder;
+        protocolTreasury = config.protocolTreasury;
+        defaultDistributor = config.defaultDistributor;
 
-        status = PoolStatus.FUNDRAISING;
+        // Public pools start with deposits open
+        depositsOpen = (config.poolType == PoolType.PUBLIC);
+        withdrawalsOpen = (config.poolType == PoolType.PUBLIC);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
+        _grantRole(UPGRADER_ROLE, msg.sender);
+
+        // For private/mutual pools, grant depositor role to owner
+        if (config.poolOwner != address(0)) {
+            _grantRole(DEPOSITOR_ROLE, config.poolOwner);
+        }
     }
 
-    // ============ Investor Functions ============
+    // ============ UUPS ============
 
     /**
-     * @notice Deposit USDC and receive pool tokens 1:1
-     * @param amount USDC amount to deposit (6 decimals)
-     * @dev Tokens are minted 1:1 with USDC during fundraising.
-     *      USDC has 6 decimals, tokens have 18 decimals, but we maintain
-     *      1:1 value relationship (1 USDC = 1 token at launch)
+     * @notice Authorize upgrade (UUPS pattern)
+     * @param newImplementation Address of new implementation
      */
-    function deposit(uint256 amount) external nonReentrant whenNotPaused {
-        if (status != PoolStatus.FUNDRAISING) revert InvalidPoolStatus();
-        if (block.timestamp < fundraiseStart) revert FundraisingNotStarted();
-        if (block.timestamp > fundraiseEnd) revert FundraisingEnded();
-        if (amount < MIN_INVESTMENT) revert BelowMinimumInvestment();
-        if (investorDeposits[msg.sender] + amount > MAX_INVESTMENT) {
-            revert ExceedsMaximumInvestment();
+    function _authorizeUpgrade(address newImplementation)
+        internal
+        override
+        onlyRole(UPGRADER_ROLE)
+    {}
+
+    // ============ LP Functions ============
+
+    /**
+     * @notice Deposit USDC and receive LP tokens at current NAV
+     * @param usdcAmount Amount of USDC to deposit
+     */
+    function deposit(uint256 usdcAmount) external nonReentrant whenNotPaused {
+        if (!depositsOpen) revert DepositsNotOpen();
+        if (usdcAmount == 0) revert ZeroAmount();
+        if (usdcAmount < minDeposit) revert BelowMinimumDeposit();
+        if (totalDeposited[msg.sender] + usdcAmount > maxDeposit) {
+            revert ExceedsMaximumDeposit();
         }
-        if (totalSupply() + amount > maxCapital) revert ExceedsPoolCapacity();
+
+        // Check pool capacity
+        uint256 currentValue = getPoolValue();
+        if (currentValue + usdcAmount > maxCapital) revert ExceedsPoolCapacity();
+
+        // For PRIVATE and MUTUAL pools, require DEPOSITOR_ROLE
+        if (poolType != PoolType.PUBLIC) {
+            if (!hasRole(DEPOSITOR_ROLE, msg.sender)) revert NotAuthorized();
+        }
+
+        // Calculate tokens to mint at current NAV
+        uint256 tokenPrice = getTokenPrice();
+        uint256 tokensToMint = (usdcAmount * PRECISION) / tokenPrice;
 
         // Track first-time investors
-        if (investorDeposits[msg.sender] == 0) {
+        if (totalDeposited[msg.sender] == 0) {
             investorCount++;
         }
 
-        // Transfer USDC from investor
-        USDC.safeTransferFrom(msg.sender, address(this), amount);
+        // Transfer USDC from LP
+        usdc.safeTransferFrom(msg.sender, address(this), usdcAmount);
 
-        // Update investor tracking
-        investorDeposits[msg.sender] += amount;
+        // Update tracking
+        totalDeposited[msg.sender] += usdcAmount;
 
-        // Mint tokens 1:1 (same amount as USDC deposited)
-        // Note: USDC is 6 decimals, our token is 18 decimals
-        // We mint `amount` tokens which equals `amount` USDC in value
-        _mint(msg.sender, amount);
+        // Mint LP tokens
+        _mint(msg.sender, tokensToMint);
 
-        emit Deposited(msg.sender, amount, amount);
+        emit Deposited(msg.sender, usdcAmount, tokensToMint, tokenPrice);
     }
 
     /**
-     * @notice Redeem tokens for USDC after pool expires
-     * @param tokenAmount Amount of tokens to redeem
-     * @dev Redemption value = (tokenAmount * poolBalance) / totalSupply
-     *      This reflects the proportional share of remaining pool assets
+     * @notice Withdraw USDC by burning LP tokens at current NAV
+     * @param tokenAmount Amount of LP tokens to burn
      */
-    function redeem(uint256 tokenAmount) external nonReentrant {
-        if (status != PoolStatus.EXPIRED) revert InvalidPoolStatus();
+    function withdraw(uint256 tokenAmount) external nonReentrant {
+        if (!withdrawalsOpen) revert WithdrawalsNotOpen();
         if (tokenAmount == 0) revert ZeroAmount();
         if (balanceOf(msg.sender) < tokenAmount) revert InsufficientTokens();
 
-        uint256 totalBalance = USDC.balanceOf(address(this));
-        uint256 supply = totalSupply();
+        // Calculate USDC to return at current NAV
+        uint256 tokenPrice = getTokenPrice();
+        uint256 usdcAmount = (tokenAmount * tokenPrice) / PRECISION;
 
-        // Calculate USDC to return: (tokenAmount * totalBalance) / supply
-        uint256 redemptionAmount = (tokenAmount * totalBalance) / supply;
+        // Check pool has liquidity
+        uint256 availableLiquidity = getAvailableLiquidity();
+        if (availableLiquidity < usdcAmount) revert InsufficientLiquidity();
 
-        // Burn tokens first (CEI pattern)
+        // Burn LP tokens first (CEI pattern)
         _burn(msg.sender, tokenAmount);
 
-        // Transfer USDC to investor
-        USDC.safeTransfer(msg.sender, redemptionAmount);
+        // Transfer USDC to LP
+        usdc.safeTransfer(msg.sender, usdcAmount);
 
-        emit Redeemed(msg.sender, tokenAmount, redemptionAmount);
+        emit Withdrawn(msg.sender, tokenAmount, usdcAmount, tokenPrice);
+    }
+
+    // ============ Treasury Functions ============
+
+    /**
+     * @notice Collect premium and distribute to stakeholders
+     * @param policyId Policy identifier
+     * @param grossPremium Total premium amount
+     * @param distributor Address of the distributor
+     */
+    function collectPremium(
+        uint256 policyId,
+        uint256 grossPremium,
+        address distributor
+    ) external onlyRole(TREASURY_ROLE) nonReentrant whenNotPaused {
+        if (grossPremium == 0) revert ZeroAmount();
+
+        // Transfer gross premium from Treasury
+        usdc.safeTransferFrom(msg.sender, address(this), grossPremium);
+
+        // Calculate shares
+        uint256 lpShare = (grossPremium * LP_SHARE_BPS) / BPS_DENOMINATOR;
+        uint256 builderShare = (grossPremium * BUILDER_SHARE_BPS) / BPS_DENOMINATOR;
+        uint256 protocolShare = (grossPremium * PROTOCOL_SHARE_BPS) / BPS_DENOMINATOR;
+        uint256 distributorShare = (grossPremium * DISTRIBUTOR_SHARE_BPS) / BPS_DENOMINATOR;
+
+        // Distribute builder share
+        if (productBuilder != address(0) && builderShare > 0) {
+            usdc.safeTransfer(productBuilder, builderShare);
+        } else {
+            lpShare += builderShare;
+        }
+
+        // Distribute protocol share
+        if (protocolShare > 0) {
+            usdc.safeTransfer(protocolTreasury, protocolShare);
+        }
+
+        // Distribute distributor share
+        address actualDistributor = distributor != address(0) ? distributor : defaultDistributor;
+        if (actualDistributor != address(0) && distributorShare > 0) {
+            usdc.safeTransfer(actualDistributor, distributorShare);
+        } else {
+            lpShare += distributorShare;
+        }
+
+        totalPremiums += grossPremium;
+
+        emit PremiumCollected(
+            policyId,
+            grossPremium,
+            lpShare,
+            productBuilder != address(0) ? builderShare : 0,
+            protocolShare,
+            actualDistributor != address(0) ? distributorShare : 0
+        );
+    }
+
+    /**
+     * @notice Process payout for a claim
+     * @param policyId Policy identifier
+     * @param payoutAmount Amount to pay out
+     */
+    function processPayout(
+        uint256 policyId,
+        uint256 payoutAmount
+    ) external onlyRole(TREASURY_ROLE) nonReentrant {
+        if (payoutAmount == 0) revert ZeroAmount();
+        if (usdc.balanceOf(address(this)) < payoutAmount) {
+            revert InsufficientBalance();
+        }
+
+        totalPayouts += payoutAmount;
+        usdc.safeTransfer(msg.sender, payoutAmount);
+
+        emit PayoutProcessed(policyId, payoutAmount);
+    }
+
+    /**
+     * @notice Update active exposure
+     * @param policyId Policy identifier
+     * @param delta Change in exposure
+     */
+    function updateExposure(
+        uint256 policyId,
+        int256 delta
+    ) external onlyRole(TREASURY_ROLE) {
+        if (delta > 0) {
+            activeExposure += uint256(delta);
+        } else if (delta < 0) {
+            uint256 decrease = uint256(-delta);
+            if (decrease > activeExposure) {
+                activeExposure = 0;
+            } else {
+                activeExposure -= decrease;
+            }
+        }
+
+        emit ExposureUpdated(policyId, delta, activeExposure);
     }
 
     // ============ Admin Functions ============
 
     /**
-     * @notice Activate pool after fundraising completes
-     * @dev Can only be called after fundraiseEnd and if targetCapital is met
+     * @notice Open or close deposits
+     * @param open Whether deposits should be open
      */
-    function activatePool() external onlyRole(ADMIN_ROLE) {
-        if (status != PoolStatus.FUNDRAISING) revert InvalidPoolStatus();
-        if (block.timestamp <= fundraiseEnd) revert FundraisingNotEnded();
-        if (totalSupply() < targetCapital) revert TargetCapitalNotMet();
-
-        status = PoolStatus.ACTIVE;
-        coverageStart = block.timestamp;
-
-        emit PoolActivated(block.timestamp, totalSupply());
+    function setDepositsOpen(bool open) external onlyRole(ADMIN_ROLE) {
+        depositsOpen = open;
+        emit DepositsStatusChanged(open);
     }
 
     /**
-     * @notice Close pool to new policies
-     * @dev Existing policies remain active until coverage ends
+     * @notice Open or close withdrawals
+     * @param open Whether withdrawals should be open
      */
-    function closePool() external onlyRole(ADMIN_ROLE) {
-        if (status != PoolStatus.ACTIVE) revert InvalidPoolStatus();
-
-        status = PoolStatus.CLOSED;
-
-        emit PoolClosed(block.timestamp);
+    function setWithdrawalsOpen(bool open) external onlyRole(ADMIN_ROLE) {
+        withdrawalsOpen = open;
+        emit WithdrawalsStatusChanged(open);
     }
 
     /**
-     * @notice Mark pool as expired after all policies end
-     * @dev Enables redemption for token holders
+     * @notice Update minimum deposit amount
+     * @param newMin New minimum deposit
      */
-    function expirePool() external onlyRole(ADMIN_ROLE) {
-        if (status != PoolStatus.CLOSED) revert InvalidPoolStatus();
-        if (block.timestamp <= coverageEnd) revert CoverageNotEnded();
-
-        status = PoolStatus.EXPIRED;
-
-        emit PoolExpired(block.timestamp);
+    function setMinDeposit(uint256 newMin) external onlyRole(ADMIN_ROLE) {
+        if (newMin == 0) revert InvalidAmount();
+        if (newMin > maxDeposit) revert InvalidAmount();
+        minDeposit = newMin;
     }
 
     /**
-     * @notice Update platform fee percentage
-     * @param newFee New fee percentage (max 20%)
+     * @notice Update maximum deposit amount
+     * @param newMax New maximum deposit
      */
-    function setPlatformFee(uint256 newFee) external onlyRole(ADMIN_ROLE) {
-        if (newFee > 20) revert InvalidPlatformFee();
+    function setMaxDeposit(uint256 newMax) external onlyRole(ADMIN_ROLE) {
+        if (newMax < minDeposit) revert InvalidAmount();
+        maxDeposit = newMax;
+    }
 
-        platformFeePercent = newFee;
+    /**
+     * @notice Update product builder address
+     * @param newBuilder New builder address
+     */
+    function setProductBuilder(address newBuilder) external onlyRole(ADMIN_ROLE) {
+        productBuilder = newBuilder;
+    }
 
-        emit PlatformFeeUpdated(newFee);
+    /**
+     * @notice Update default distributor address
+     * @param newDistributor New distributor address
+     */
+    function setDefaultDistributor(address newDistributor) external onlyRole(ADMIN_ROLE) {
+        defaultDistributor = newDistributor;
+    }
+
+    /**
+     * @notice Whitelist depositor for private/mutual pools
+     * @param depositor Address to whitelist
+     */
+    function addDepositor(address depositor) external onlyRole(ADMIN_ROLE) {
+        if (depositor == address(0)) revert ZeroAddress();
+        _grantRole(DEPOSITOR_ROLE, depositor);
+    }
+
+    /**
+     * @notice Remove depositor whitelist
+     * @param depositor Address to remove
+     */
+    function removeDepositor(address depositor) external onlyRole(ADMIN_ROLE) {
+        _revokeRole(DEPOSITOR_ROLE, depositor);
     }
 
     /**
      * @notice Pause the contract
-     * @dev Prevents deposits and premium/payout operations
      */
     function pause() external onlyRole(ADMIN_ROLE) {
         _pause();
@@ -390,133 +567,67 @@ contract RiskPool is ERC20, AccessControl, ReentrancyGuard, Pausable {
         _unpause();
     }
 
-    // ============ Treasury Functions ============
-
-    /**
-     * @notice Receive premium payment for a policy
-     * @param policyId Policy identifier
-     * @param grossPremium Total premium amount (before platform fee)
-     * @dev Platform fee is deducted, net premium increases pool value
-     */
-    function receivePremium(
-        uint256 policyId,
-        uint256 grossPremium
-    ) external onlyRole(TREASURY_ROLE) nonReentrant whenNotPaused {
-        if (status != PoolStatus.ACTIVE && status != PoolStatus.CLOSED) {
-            revert InvalidPoolStatus();
-        }
-        if (isPolicyInPool[policyId]) revert PolicyAlreadyInPool();
-        if (grossPremium == 0) revert ZeroAmount();
-
-        // Transfer USDC from Treasury
-        USDC.safeTransferFrom(msg.sender, address(this), grossPremium);
-
-        // Calculate platform fee and net premium
-        uint256 platformFee = (grossPremium * platformFeePercent) / 100;
-        uint256 netPremium = grossPremium - platformFee;
-
-        // Track premium collection
-        totalPremiumsCollected += netPremium;
-
-        // Add policy to pool
-        policyIds.push(policyId);
-        isPolicyInPool[policyId] = true;
-
-        // Note: Platform fee stays in pool and is distributed to token holders
-        // In production, you might want to send it to a separate address
-
-        emit PremiumReceived(policyId, grossPremium, netPremium);
-    }
-
-    /**
-     * @notice Process payout for a claim
-     * @param policyId Policy identifier
-     * @param payoutAmount Amount to pay out
-     * @dev Transfers USDC to Treasury for distribution to farmer
-     */
-    function processPayout(
-        uint256 policyId,
-        uint256 payoutAmount
-    ) external onlyRole(TREASURY_ROLE) nonReentrant {
-        if (!isPolicyInPool[policyId]) revert PolicyNotInPool();
-        if (payoutAmount == 0) revert ZeroAmount();
-        if (USDC.balanceOf(address(this)) < payoutAmount) {
-            revert InsufficientBalance();
-        }
-
-        // Update tracking
-        totalPayoutsMade += payoutAmount;
-
-        // Transfer USDC to Treasury
-        USDC.safeTransfer(msg.sender, payoutAmount);
-
-        emit PayoutProcessed(policyId, payoutAmount);
-    }
-
     // ============ View Functions ============
 
     /**
-     * @notice Get current token value in USDC (with 18 decimal precision)
-     * @return Token value with 18 decimals
-     * @dev Formula: (poolBalance * 1e18) / totalSupply
-     *      Returns 1e18 (1.00) if no tokens exist
+     * @notice Get current token price (NAV per token)
+     * @return Token price with 18 decimal precision
      */
-    function getTokenValue() public view returns (uint256) {
+    function getTokenPrice() public view returns (uint256) {
         uint256 supply = totalSupply();
         if (supply == 0) return PRECISION;
 
-        uint256 balance = USDC.balanceOf(address(this));
-        return (balance * PRECISION) / supply;
+        uint256 poolValue = usdc.balanceOf(address(this));
+        return (poolValue * PRECISION) / supply;
     }
 
     /**
-     * @notice Get pool USDC balance
-     * @return Current USDC balance
+     * @notice Get total pool value in USDC
+     * @return Pool USDC balance
      */
-    function getPoolBalance() external view returns (uint256) {
-        return USDC.balanceOf(address(this));
+    function getPoolValue() public view returns (uint256) {
+        return usdc.balanceOf(address(this));
     }
 
     /**
-     * @notice Get net asset value per token
-     * @return NAV with 18 decimals (same as getTokenValue)
+     * @notice Get available liquidity for withdrawals
+     * @return Available USDC after reserving for active exposure
      */
-    function getNetAssetValue() external view returns (uint256) {
-        return getTokenValue();
+    function getAvailableLiquidity() public view returns (uint256) {
+        uint256 poolBalance = usdc.balanceOf(address(this));
+        uint256 reserved = (activeExposure * 120) / 100;
+
+        if (poolBalance <= reserved) return 0;
+        return poolBalance - reserved;
     }
 
     /**
-     * @notice Get number of policies in this pool
-     * @return Policy count
+     * @notice Calculate how many tokens would be minted for a deposit
+     * @param usdcAmount USDC amount to deposit
+     * @return Tokens that would be minted
      */
-    function getPolicyCount() external view returns (uint256) {
-        return policyIds.length;
+    function calculateMintAmount(uint256 usdcAmount) external view returns (uint256) {
+        uint256 tokenPrice = getTokenPrice();
+        return (usdcAmount * PRECISION) / tokenPrice;
     }
 
     /**
-     * @notice Calculate current ROI percentage
-     * @return ROI as percentage with 2 decimal precision (e.g., 850 = 8.50%)
-     * @dev Returns positive for gains, negative for losses
+     * @notice Calculate USDC received for token redemption
+     * @param tokenAmount Tokens to redeem
+     * @return USDC that would be received
      */
-    function getROI() external view returns (int256) {
-        uint256 currentValue = getTokenValue();
-
-        // ROI = ((currentValue - initialValue) / initialValue) * 100
-        // Initial value is 1e18 (1.00)
-        if (currentValue >= PRECISION) {
-            return int256(((currentValue - PRECISION) * 10000) / PRECISION);
-        } else {
-            return -int256(((PRECISION - currentValue) * 10000) / PRECISION);
-        }
+    function calculateWithdrawAmount(uint256 tokenAmount) external view returns (uint256) {
+        uint256 tokenPrice = getTokenPrice();
+        return (tokenAmount * tokenPrice) / PRECISION;
     }
 
     /**
-     * @notice Get comprehensive investor information
+     * @notice Get investor information
      * @param investor Address to query
-     * @return deposited USDC originally deposited
+     * @return deposited Total USDC deposited
      * @return tokensHeld Current token balance
-     * @return currentValue Current USDC value of holdings
-     * @return roi Current ROI percentage (2 decimal precision)
+     * @return currentValue Current USDC value
+     * @return roi Return on investment (basis points)
      */
     function getInvestorInfo(address investor)
         external
@@ -528,11 +639,10 @@ contract RiskPool is ERC20, AccessControl, ReentrancyGuard, Pausable {
             int256 roi
         )
     {
-        deposited = investorDeposits[investor];
+        deposited = totalDeposited[investor];
         tokensHeld = balanceOf(investor);
-        currentValue = (tokensHeld * getTokenValue()) / PRECISION;
-        
-        // Calculate individual ROI
+        currentValue = (tokensHeld * getTokenPrice()) / PRECISION;
+
         if (deposited > 0) {
             if (currentValue >= deposited) {
                 roi = int256(((currentValue - deposited) * 10000) / deposited);
@@ -543,35 +653,53 @@ contract RiskPool is ERC20, AccessControl, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @notice Get all policy IDs in this pool
-     * @return Array of policy IDs
+     * @notice Get pool financial summary
+     * @return poolValue Total pool value
+     * @return supply Total token supply
+     * @return tokenPrice Current token price
+     * @return premiums Total premiums collected
+     * @return payouts Total payouts made
+     * @return exposure Active exposure
      */
-    function getAllPolicyIds() external view returns (uint256[] memory) {
-        return policyIds;
+    function getPoolSummary()
+        external
+        view
+        returns (
+            uint256 poolValue,
+            uint256 supply,
+            uint256 tokenPrice,
+            uint256 premiums,
+            uint256 payouts,
+            uint256 exposure
+        )
+    {
+        poolValue = getPoolValue();
+        supply = totalSupply();
+        tokenPrice = getTokenPrice();
+        premiums = totalPremiums;
+        payouts = totalPayouts;
+        exposure = activeExposure;
     }
 
     /**
-     * @notice Check if pool can accept a new policy with given exposure
-     * @param sumInsured The sum insured for the proposed policy
-     * @return Whether the pool has sufficient capital
+     * @notice Check if pool can accept a policy
+     * @param sumInsured Sum insured of proposed policy
+     * @return Whether pool can underwrite the policy
      */
     function canAcceptPolicy(uint256 sumInsured) external view returns (bool) {
-        if (status != PoolStatus.ACTIVE && status != PoolStatus.CLOSED) {
-            return false;
-        }
-        return USDC.balanceOf(address(this)) >= sumInsured;
+        return getPoolValue() >= sumInsured;
     }
 
     /**
-     * @notice Calculate redemption amount for a given token amount
-     * @param tokenAmount Tokens to redeem
-     * @return USDC amount that would be received
+     * @notice Check if an address can deposit
+     * @param investor Address to check
+     * @return Whether the address can deposit
      */
-    function calculateRedemption(uint256 tokenAmount) external view returns (uint256) {
-        uint256 supply = totalSupply();
-        if (supply == 0) return 0;
-
-        uint256 totalBalance = USDC.balanceOf(address(this));
-        return (tokenAmount * totalBalance) / supply;
+    function canDeposit(address investor) external view returns (bool) {
+        if (!depositsOpen) return false;
+        if (poolType != PoolType.PUBLIC) {
+            return hasRole(DEPOSITOR_ROLE, investor);
+        }
+        return true;
     }
 }
