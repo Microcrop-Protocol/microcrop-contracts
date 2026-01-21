@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
  * @title Treasury
  * @notice Holds USDC reserves, collects premiums, and disburses payouts for the MicroCrop insurance platform
- * @dev Implements comprehensive reserve management to ensure sufficient funds for payouts.
- *      Uses SafeERC20 for all token transfers to prevent common ERC20 pitfalls.
+ * @dev UUPS upgradeable proxy implementation. Implements comprehensive reserve management to ensure 
+ *      sufficient funds for payouts. Uses SafeERC20 for all token transfers.
  *
  * Security Considerations:
  * - All token transfers use SafeERC20
@@ -19,14 +21,22 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
  * - Pausable for emergency situations
  * - Reserve requirements enforced before payouts
  * - Double-operation prevention (premiumReceived, payoutProcessed)
+ * - UUPS upgrade pattern with UPGRADER_ROLE protection
  *
  * Role Hierarchy:
  * - DEFAULT_ADMIN_ROLE: Can grant/revoke all roles (should be multi-sig)
  * - ADMIN_ROLE: Can update platform fee, pause/unpause, emergency withdraw
  * - BACKEND_ROLE: Can receive premiums
  * - PAYOUT_ROLE: Can request payouts (PayoutReceiver contract only)
+ * - UPGRADER_ROLE: Can authorize contract upgrades
  */
-contract Treasury is AccessControl, ReentrancyGuard, Pausable {
+contract Treasury is 
+    Initializable,
+    AccessControlUpgradeable,
+    ReentrancyGuard,
+    PausableUpgradeable,
+    UUPSUpgradeable
+{
     using SafeERC20 for IERC20;
 
     // ============ Constants ============
@@ -54,15 +64,17 @@ contract Treasury is AccessControl, ReentrancyGuard, Pausable {
     /// @notice Payout role for requesting payouts (PayoutReceiver contract)
     bytes32 public constant PAYOUT_ROLE = keccak256("PAYOUT_ROLE");
 
-    // ============ Immutable State Variables ============
-
-    /// @notice USDC token contract
-    IERC20 public immutable usdc;
-
-    /// @notice Backend wallet that receives payouts for M-Pesa conversion
-    address public immutable backendWallet;
+    /// @notice Upgrader role for authorizing contract upgrades
+    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
 
     // ============ State Variables ============
+    // NOTE: Storage layout must be preserved across upgrades
+
+    /// @notice USDC token contract
+    IERC20 public usdc;
+
+    /// @notice Backend wallet that receives payouts for M-Pesa conversion
+    address public backendWallet;
 
     /// @notice Lifetime total premiums collected (net of platform fees)
     uint256 public totalPremiums;
@@ -81,6 +93,9 @@ contract Treasury is AccessControl, ReentrancyGuard, Pausable {
 
     /// @notice Mapping to track if payout has been processed for a policy
     mapping(uint256 => bool) public payoutProcessed;
+
+    /// @dev Reserved storage gap for future upgrades (50 slots)
+    uint256[50] private __gap;
 
     // ============ Events ============
 
@@ -161,23 +176,49 @@ contract Treasury is AccessControl, ReentrancyGuard, Pausable {
 
     // ============ Constructor ============
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    // ============ Initializer ============
+
     /**
      * @notice Initializes the Treasury contract
-     * @dev Sets up USDC token, backend wallet, and default platform fee
+     * @dev Replaces constructor for upgradeable contracts. Can only be called once.
      * @param _usdc Address of the USDC token contract
      * @param _backendWallet Address of the backend wallet for payouts
+     * @param _admin Address to receive admin roles
      */
-    constructor(address _usdc, address _backendWallet) {
+    function initialize(
+        address _usdc,
+        address _backendWallet,
+        address _admin
+    ) external initializer {
         if (_usdc == address(0)) revert ZeroAddress();
         if (_backendWallet == address(0)) revert ZeroAddress();
+        if (_admin == address(0)) revert ZeroAddress();
+
+        __AccessControl_init();
+        __Pausable_init();
 
         usdc = IERC20(_usdc);
         backendWallet = _backendWallet;
         platformFeePercent = 10; // Default 10%
 
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(ADMIN_ROLE, msg.sender);
+        _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        _grantRole(ADMIN_ROLE, _admin);
+        _grantRole(UPGRADER_ROLE, _admin);
     }
+
+    // ============ UUPS Authorization ============
+
+    /**
+     * @notice Authorizes contract upgrades
+     * @dev Only addresses with UPGRADER_ROLE can authorize upgrades
+     * @param newImplementation Address of the new implementation contract
+     */
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
 
     // ============ External Functions ============
 
@@ -430,5 +471,13 @@ contract Treasury is AccessControl, ReentrancyGuard, Pausable {
      */
     function isPayoutProcessed(uint256 policyId) external view returns (bool processed) {
         return payoutProcessed[policyId];
+    }
+
+    /**
+     * @notice Returns the contract version for upgrade tracking
+     * @return version The contract version string
+     */
+    function version() external pure returns (string memory) {
+        return "1.0.0";
     }
 }
