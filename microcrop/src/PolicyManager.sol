@@ -1,29 +1,39 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {PolicyNFT} from "./PolicyNFT.sol";
 
 /**
  * @title PolicyManager
  * @notice Manages the complete lifecycle of parametric crop insurance policies
- * @dev Handles policy creation, activation, and claims tracking with comprehensive
- *      access control and validation. This contract is the core registry for all
- *      insurance policies in the MicroCrop ecosystem.
+ * @dev UUPS upgradeable proxy implementation. Handles policy creation, activation, 
+ *      and claims tracking with comprehensive access control and validation.
+ *      Mints NFT certificates to farmers when policies are activated.
  *
  * Security Considerations:
  * - All state-changing functions are protected by access control
  * - ReentrancyGuard prevents reentrancy attacks
  * - Comprehensive input validation on all parameters
  * - Events emitted for all state changes for auditability
+ * - UUPS upgrade pattern with UPGRADER_ROLE protection
  *
  * Role Hierarchy:
  * - DEFAULT_ADMIN_ROLE: Can grant/revoke all roles (should be multi-sig)
  * - ADMIN_ROLE: Can manage contract settings
  * - BACKEND_ROLE: Can create and activate policies
  * - ORACLE_ROLE: Can mark policies as claimed (PayoutReceiver only)
+ * - UPGRADER_ROLE: Can authorize contract upgrades
  */
-contract PolicyManager is AccessControl, ReentrancyGuard {
+contract PolicyManager is 
+    Initializable,
+    AccessControlUpgradeable,
+    ReentrancyGuard,
+    UUPSUpgradeable
+{
     // ============ Type Declarations ============
 
     /**
@@ -113,7 +123,11 @@ contract PolicyManager is AccessControl, ReentrancyGuard {
     /// @notice Oracle role for claim processing (PayoutReceiver contract)
     bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
 
+    /// @notice Upgrader role for authorizing contract upgrades
+    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+
     // ============ State Variables ============
+    // NOTE: Storage layout must be preserved across upgrades
 
     /// @notice Counter for generating unique policy IDs
     uint256 private _policyCounter;
@@ -130,6 +144,12 @@ contract PolicyManager is AccessControl, ReentrancyGuard {
     /// @notice Mapping from farmer address to year to claim count
     /// @dev Year is calculated as timestamp / 365 days from epoch
     mapping(address => mapping(uint256 => uint256)) private _farmerClaimCounts;
+
+    /// @notice PolicyNFT contract for minting farmer certificates
+    PolicyNFT public policyNFT;
+
+    /// @dev Reserved storage gap for future upgrades (49 slots - reduced by 1 for policyNFT)
+    uint256[49] private __gap;
 
     // ============ Events ============
 
@@ -177,6 +197,12 @@ contract PolicyManager is AccessControl, ReentrancyGuard {
     event PolicyCancelled(uint256 indexed policyId, uint256 cancelledAt);
 
     /**
+     * @notice Emitted when the PolicyNFT contract is set
+     * @param policyNFT Address of the PolicyNFT contract
+     */
+    event PolicyNFTSet(address indexed policyNFT);
+
+    /**
      * @notice Emitted when a farmer's claim count is incremented
      * @param farmer Address of the farmer
      * @param year The year for which the claim count was incremented
@@ -220,15 +246,59 @@ contract PolicyManager is AccessControl, ReentrancyGuard {
     /// @notice Thrown when policy has expired
     error PolicyExpired(uint256 policyId, uint256 endDate, uint256 currentTime);
 
+    /// @notice Thrown when a zero address is provided
+    error ZeroAddress();
+
+    /// @notice Thrown when PolicyNFT is not set
+    error PolicyNFTNotSet();
+
+    /// @notice Thrown when distributor address is zero
+    error ZeroAddressDistributor();
+
     // ============ Constructor ============
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    // ============ Initializer ============
 
     /**
      * @notice Initializes the PolicyManager contract
-     * @dev Grants DEFAULT_ADMIN_ROLE and ADMIN_ROLE to the deployer
+     * @dev Replaces constructor for upgradeable contracts. Can only be called once.
+     * @param _admin Address to receive admin roles
      */
-    constructor() {
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(ADMIN_ROLE, msg.sender);
+    function initialize(address _admin) external initializer {
+        if (_admin == address(0)) revert ZeroAddress();
+
+        __AccessControl_init();
+
+        _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        _grantRole(ADMIN_ROLE, _admin);
+        _grantRole(UPGRADER_ROLE, _admin);
+    }
+
+    // ============ UUPS Authorization ============
+
+    /**
+     * @notice Authorizes contract upgrades
+     * @dev Only addresses with UPGRADER_ROLE can authorize upgrades
+     * @param newImplementation Address of the new implementation contract
+     */
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
+
+    // ============ Admin Functions ============
+
+    /**
+     * @notice Sets the PolicyNFT contract address
+     * @dev Only callable by ADMIN_ROLE. Must be called before activating policies.
+     * @param _policyNFT Address of the PolicyNFT contract
+     */
+    function setPolicyNFT(address _policyNFT) external onlyRole(ADMIN_ROLE) {
+        if (_policyNFT == address(0)) revert ZeroAddress();
+        policyNFT = PolicyNFT(_policyNFT);
+        emit PolicyNFTSet(_policyNFT);
     }
 
     // ============ External Functions ============
@@ -336,17 +406,36 @@ contract PolicyManager is AccessControl, ReentrancyGuard {
     }
 
     /**
-     * @notice Activates a pending policy after premium payment
+     * @notice Activates a pending policy after premium payment and mints NFT certificate
      * @dev Only callable by addresses with BACKEND_ROLE. The policy must be in
      *      PENDING status. This should be called after confirming premium payment.
+     *      Mints a PolicyNFT to the farmer as proof of coverage.
      *
      * @param policyId The unique identifier of the policy to activate
+     * @param distributor Address of the insurance distributor/provider
+     * @param distributorName Human-readable name of the distributor
+     * @param region Geographic region for the policy
      */
-    function activatePolicy(uint256 policyId)
+    function activatePolicy(
+        uint256 policyId,
+        address distributor,
+        string calldata distributorName,
+        string calldata region
+    )
         external
         onlyRole(BACKEND_ROLE)
         nonReentrant
     {
+        // Check PolicyNFT is set
+        if (address(policyNFT) == address(0)) {
+            revert PolicyNFTNotSet();
+        }
+
+        // Check distributor address
+        if (distributor == address(0)) {
+            revert ZeroAddressDistributor();
+        }
+
         Policy storage policy = _policies[policyId];
 
         // Check policy exists
@@ -371,13 +460,28 @@ contract PolicyManager is AccessControl, ReentrancyGuard {
             ++_farmerActiveCounts[policy.farmer];
         }
 
+        // Mint NFT certificate to the farmer
+        policyNFT.mintPolicy(
+            policy.farmer,
+            policyId,
+            distributor,
+            distributorName,
+            policy.sumInsured,
+            policy.premium,
+            policy.startDate,
+            policy.endDate,
+            PolicyNFT.CoverageType(uint8(policy.coverageType)),
+            region,
+            policy.plotId
+        );
+
         emit PolicyActivated(policyId, block.timestamp);
     }
 
     /**
      * @notice Marks a policy as claimed after payout processing
      * @dev Only callable by addresses with ORACLE_ROLE (PayoutReceiver contract).
-     *      The policy must be ACTIVE and not expired.
+     *      The policy must be ACTIVE and not expired. Updates NFT status to inactive.
      *
      * @param policyId The unique identifier of the policy to mark as claimed
      */
@@ -411,6 +515,11 @@ contract PolicyManager is AccessControl, ReentrancyGuard {
             unchecked {
                 --_farmerActiveCounts[policy.farmer];
             }
+        }
+
+        // Update NFT status to inactive (allows transfer)
+        if (address(policyNFT) != address(0)) {
+            policyNFT.updatePolicyStatus(policyId, false);
         }
 
         emit PolicyClaimed(policyId, block.timestamp);
@@ -478,12 +587,16 @@ contract PolicyManager is AccessControl, ReentrancyGuard {
             );
         }
 
-        // If policy was active, decrement active count
+        // If policy was active, decrement active count and update NFT
         if (policy.status == PolicyStatus.ACTIVE) {
             if (_farmerActiveCounts[policy.farmer] > 0) {
                 unchecked {
                     --_farmerActiveCounts[policy.farmer];
                 }
+            }
+            // Update NFT status to inactive (allows transfer)
+            if (address(policyNFT) != address(0)) {
+                policyNFT.updatePolicyStatus(policyId, false);
             }
         }
 
@@ -590,5 +703,13 @@ contract PolicyManager is AccessControl, ReentrancyGuard {
      */
     function policyExists(uint256 policyId) external view returns (bool exists) {
         return _policies[policyId].id != 0;
+    }
+
+    /**
+     * @notice Returns the contract version for upgrade tracking
+     * @return The contract version string
+     */
+    function version() external pure returns (string memory) {
+        return "1.0.0";
     }
 }
