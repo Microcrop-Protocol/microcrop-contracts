@@ -242,7 +242,7 @@ contract RiskPoolTest is Test {
 
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
 
         assertEq(pool.balanceOf(investor1), depositAmount);
@@ -256,7 +256,7 @@ contract RiskPoolTest is Test {
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
         vm.expectRevert(RiskPool.BelowMinimumDeposit.selector);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
     }
 
@@ -271,14 +271,14 @@ contract RiskPoolTest is Test {
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
         vm.expectRevert(RiskPool.NotAuthorized.selector);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
 
         // Grant role and deposit
         pool.addDepositor(investor1);
 
         vm.startPrank(investor1);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
 
         assertEq(pool.balanceOf(investor1), depositAmount);
@@ -292,7 +292,7 @@ contract RiskPoolTest is Test {
         vm.startPrank(investor1);
         usdc.approve(address(pool), 1_000e6);
         vm.expectRevert(RiskPool.DepositsNotOpen.selector);
-        pool.deposit(1_000e6);
+        pool.deposit(1_000e6, 0);
         vm.stopPrank();
     }
 
@@ -304,7 +304,7 @@ contract RiskPoolTest is Test {
         vm.startPrank(investor1);
         usdc.approve(address(pool), 1_000e6);
         vm.expectRevert();
-        pool.deposit(1_000e6);
+        pool.deposit(1_000e6, 0);
         vm.stopPrank();
     }
 
@@ -317,11 +317,11 @@ contract RiskPoolTest is Test {
         // Deposit first
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
 
         // Withdraw
         uint256 withdrawAmount = 500e6;
-        pool.withdraw(withdrawAmount);
+        pool.withdraw(withdrawAmount, 0);
         vm.stopPrank();
 
         assertEq(pool.balanceOf(investor1), depositAmount - withdrawAmount);
@@ -334,10 +334,10 @@ contract RiskPoolTest is Test {
 
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
 
         vm.expectRevert(RiskPool.InsufficientTokens.selector);
-        pool.withdraw(depositAmount + 1);
+        pool.withdraw(depositAmount + 1, 0);
         vm.stopPrank();
     }
 
@@ -347,14 +347,14 @@ contract RiskPoolTest is Test {
 
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
 
         pool.setWithdrawalsOpen(false);
 
         vm.startPrank(investor1);
         vm.expectRevert(RiskPool.WithdrawalsNotOpen.selector);
-        pool.withdraw(500e6);
+        pool.withdraw(500e6, 0);
         vm.stopPrank();
     }
 
@@ -371,7 +371,7 @@ contract RiskPoolTest is Test {
         // Deposit first
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
 
         // Treasury needs to have the premium and approve the pool
@@ -405,7 +405,7 @@ contract RiskPoolTest is Test {
         // Deposit
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
 
         // Process payout (sends to msg.sender which is treasury)
@@ -435,7 +435,7 @@ contract RiskPoolTest is Test {
         // Deposit
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
 
         uint256 priceBefore = pool.getTokenPrice();
@@ -462,7 +462,7 @@ contract RiskPoolTest is Test {
         // Deposit
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
 
         uint256 priceBefore = pool.getTokenPrice();
@@ -489,7 +489,7 @@ contract RiskPoolTest is Test {
         // First investor deposits
         vm.startPrank(investor1);
         usdc.approve(address(pool), deposit1);
-        pool.deposit(deposit1);
+        pool.deposit(deposit1, 0);
         vm.stopPrank();
 
         // Premium collected (price increases)
@@ -505,7 +505,7 @@ contract RiskPoolTest is Test {
         // Second investor deposits at higher price
         vm.startPrank(investor2);
         usdc.approve(address(pool), deposit2);
-        pool.deposit(deposit2);
+        pool.deposit(deposit2, 0);
         vm.stopPrank();
 
         // Second investor gets fewer tokens due to higher price
@@ -525,7 +525,7 @@ contract RiskPoolTest is Test {
         // Deposit
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
 
         assertEq(pool.activeExposure(), 0);
@@ -563,7 +563,7 @@ contract RiskPoolTest is Test {
         // Deposit
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
 
         // Upgrade
@@ -627,7 +627,7 @@ contract RiskPoolTest is Test {
         // Deposit at fixed amount
         vm.startPrank(investor1);
         usdc.approve(address(pool), contribution);
-        pool.deposit(contribution);
+        pool.deposit(contribution, 0);
         vm.stopPrank();
 
         assertEq(pool.balanceOf(investor1), contribution);
@@ -641,7 +641,7 @@ contract RiskPoolTest is Test {
 
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
 
         (
@@ -669,7 +669,7 @@ contract RiskPoolTest is Test {
 
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
 
         (
