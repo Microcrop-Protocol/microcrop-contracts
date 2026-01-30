@@ -102,6 +102,9 @@ contract RiskPoolFactoryTest is Test {
         // Set default distributor
         factory.setDefaultDistributor(defaultDistributor);
 
+        // Grant ORGANIZATION_ROLE to test contract for private/mutual pool creation
+        factory.registerOrganization(address(this));
+
         // Mint USDC
         usdc.mint(investor1, INITIAL_BALANCE);
         usdc.mint(institutionalInvestor, INITIAL_BALANCE);
