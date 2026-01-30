@@ -28,7 +28,7 @@ import {PolicyNFT} from "./PolicyNFT.sol";
  * - ORACLE_ROLE: Can mark policies as claimed (PayoutReceiver only)
  * - UPGRADER_ROLE: Can authorize contract upgrades
  */
-contract PolicyManager is 
+contract PolicyManager is
     Initializable,
     AccessControlUpgradeable,
     ReentrancyGuard,
@@ -364,10 +364,8 @@ contract PolicyManager is
             );
         }
 
-        // Generate unique policy ID
-        unchecked {
-            policyId = ++_policyCounter;
-        }
+        // Generate unique policy ID (overflow protected)
+        policyId = ++_policyCounter;
 
         // Calculate timestamps
         uint256 startDate = block.timestamp;
