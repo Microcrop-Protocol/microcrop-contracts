@@ -30,7 +30,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
  * - PAYOUT_ROLE: Can request payouts (PayoutReceiver contract only)
  * - UPGRADER_ROLE: Can authorize contract upgrades
  */
-contract Treasury is 
+contract Treasury is
     Initializable,
     AccessControlUpgradeable,
     ReentrancyGuard,
