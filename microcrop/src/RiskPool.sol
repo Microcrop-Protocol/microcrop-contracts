@@ -93,6 +93,11 @@ contract RiskPool is
     /// @notice Basis points denominator
     uint256 public constant BPS_DENOMINATOR = 10000;
 
+    /// @notice Virtual offset for share price calculation (prevents inflation attack)
+    /// @dev Adding 1 USDC (1e6) of virtual assets and shares prevents first depositor manipulation
+    uint256 public constant VIRTUAL_SHARES = 1e6;
+    uint256 public constant VIRTUAL_ASSETS = 1e6;
+
     // ============ Storage ============
 
     /// @notice USDC token contract
@@ -208,6 +213,18 @@ contract RiskPool is
     /// @notice Emitted when withdrawal status changes
     event WithdrawalsStatusChanged(bool open);
 
+    /// @notice Emitted when minimum deposit is updated
+    event MinDepositUpdated(uint256 oldMin, uint256 newMin);
+
+    /// @notice Emitted when maximum deposit is updated
+    event MaxDepositUpdated(uint256 oldMax, uint256 newMax);
+
+    /// @notice Emitted when product builder is updated
+    event ProductBuilderUpdated(address oldBuilder, address newBuilder);
+
+    /// @notice Emitted when default distributor is updated
+    event DefaultDistributorUpdated(address oldDistributor, address newDistributor);
+
     // ============ Errors ============
 
     error ZeroAddress();
@@ -224,6 +241,8 @@ contract RiskPool is
     error InsufficientTokens();
     error NotAuthorized();
     error InvalidRecipient();
+    error ZeroTokensMinted();
+    error SlippageExceeded(uint256 expected, uint256 actual);
 
     // ============ Structs ============
 
@@ -317,8 +336,9 @@ contract RiskPool is
     /**
      * @notice Deposit USDC and receive LP tokens at current NAV
      * @param usdcAmount Amount of USDC to deposit
+     * @param minTokensOut Minimum tokens to receive (slippage protection, 0 to skip)
      */
-    function deposit(uint256 usdcAmount) external nonReentrant whenNotPaused {
+    function deposit(uint256 usdcAmount, uint256 minTokensOut) external nonReentrant whenNotPaused {
         if (!depositsOpen) revert DepositsNotOpen();
         if (usdcAmount == 0) revert ZeroAmount();
         if (usdcAmount < minDeposit) revert BelowMinimumDeposit();
@@ -338,6 +358,14 @@ contract RiskPool is
         // Calculate tokens to mint at current NAV
         uint256 tokenPrice = getTokenPrice();
         uint256 tokensToMint = (usdcAmount * PRECISION) / tokenPrice;
+
+        // Prevent zero token minting due to rounding
+        if (tokensToMint == 0) revert ZeroTokensMinted();
+
+        // Slippage protection
+        if (minTokensOut > 0 && tokensToMint < minTokensOut) {
+            revert SlippageExceeded(minTokensOut, tokensToMint);
+        }
 
         // Track first-time investors
         if (totalDeposited[msg.sender] == 0) {
@@ -359,8 +387,9 @@ contract RiskPool is
     /**
      * @notice Withdraw USDC by burning LP tokens at current NAV
      * @param tokenAmount Amount of LP tokens to burn
+     * @param minUsdcOut Minimum USDC to receive (slippage protection, 0 to skip)
      */
-    function withdraw(uint256 tokenAmount) external nonReentrant {
+    function withdraw(uint256 tokenAmount, uint256 minUsdcOut) external nonReentrant {
         if (!withdrawalsOpen) revert WithdrawalsNotOpen();
         if (tokenAmount == 0) revert ZeroAmount();
         if (balanceOf(msg.sender) < tokenAmount) revert InsufficientTokens();
@@ -368,6 +397,11 @@ contract RiskPool is
         // Calculate USDC to return at current NAV
         uint256 tokenPrice = getTokenPrice();
         uint256 usdcAmount = (tokenAmount * tokenPrice) / PRECISION;
+
+        // Slippage protection
+        if (minUsdcOut > 0 && usdcAmount < minUsdcOut) {
+            revert SlippageExceeded(minUsdcOut, usdcAmount);
+        }
 
         // Check pool has liquidity
         uint256 availableLiquidity = getAvailableLiquidity();
@@ -508,7 +542,9 @@ contract RiskPool is
     function setMinDeposit(uint256 newMin) external onlyRole(ADMIN_ROLE) {
         if (newMin == 0) revert InvalidAmount();
         if (newMin > maxDeposit) revert InvalidAmount();
+        uint256 oldMin = minDeposit;
         minDeposit = newMin;
+        emit MinDepositUpdated(oldMin, newMin);
     }
 
     /**
@@ -517,7 +553,9 @@ contract RiskPool is
      */
     function setMaxDeposit(uint256 newMax) external onlyRole(ADMIN_ROLE) {
         if (newMax < minDeposit) revert InvalidAmount();
+        uint256 oldMax = maxDeposit;
         maxDeposit = newMax;
+        emit MaxDepositUpdated(oldMax, newMax);
     }
 
     /**
@@ -525,7 +563,9 @@ contract RiskPool is
      * @param newBuilder New builder address
      */
     function setProductBuilder(address newBuilder) external onlyRole(ADMIN_ROLE) {
+        address oldBuilder = productBuilder;
         productBuilder = newBuilder;
+        emit ProductBuilderUpdated(oldBuilder, newBuilder);
     }
 
     /**
@@ -533,7 +573,9 @@ contract RiskPool is
      * @param newDistributor New distributor address
      */
     function setDefaultDistributor(address newDistributor) external onlyRole(ADMIN_ROLE) {
+        address oldDistributor = defaultDistributor;
         defaultDistributor = newDistributor;
+        emit DefaultDistributorUpdated(oldDistributor, newDistributor);
     }
 
     /**
@@ -571,13 +613,14 @@ contract RiskPool is
 
     /**
      * @notice Get current token price (NAV per token)
+     * @dev Uses virtual shares/assets to prevent first depositor inflation attack
      * @return Token price with 18 decimal precision
      */
     function getTokenPrice() public view returns (uint256) {
-        uint256 supply = totalSupply();
-        if (supply == 0) return PRECISION;
-
-        uint256 poolValue = usdc.balanceOf(address(this));
+        // Add virtual shares and assets to prevent inflation attack
+        // This ensures the first depositor cannot manipulate share price
+        uint256 supply = totalSupply() + VIRTUAL_SHARES;
+        uint256 poolValue = usdc.balanceOf(address(this)) + VIRTUAL_ASSETS;
         return (poolValue * PRECISION) / supply;
     }
 
