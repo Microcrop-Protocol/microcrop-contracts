@@ -24,20 +24,23 @@ import {Treasury} from "./Treasury.sol";
  * - UUPS upgrade pattern with UPGRADER_ROLE protection
  *
  * Validation Requirements (ALL must pass):
+ * 0. keystoneForwarderAddress != address(0) (forwarder configured)
  * 1. msg.sender == keystoneForwarderAddress
- * 2. Workflow address matches config
- * 3. Workflow ID matches config
- * 4. Policy exists in PolicyManager
- * 5. Policy status == ACTIVE
- * 6. Policy not expired (block.timestamp <= endDate)
- * 7. !policyPaid[policyId] (prevent double payout)
- * 8. damagePercentage >= 3000 (30% minimum threshold)
- * 9. damagePercentage <= 10000 (100% maximum)
- * 10. Payout calculation correct: (sumInsured * damagePercentage) / 10000
- * 11. Weighted damage calculation: (60 * weather + 40 * satellite) / 100 == damage
- * 12. assessedAt is recent (within 1 hour)
+ * 2. workflowAddress != address(0) (workflow configured)
+ * 3. Workflow address matches config
+ * 4. Workflow ID matches config
+ * 5. Policy exists in PolicyManager
+ * 6. Policy status == ACTIVE
+ * 7. Policy not expired (block.timestamp <= endDate)
+ * 8. !policyPaid[policyId] (prevent double payout)
+ * 9. damagePercentage >= 3000 (30% minimum threshold)
+ * 10. damagePercentage <= 10000 (100% maximum)
+ * 11. Payout calculation correct: (sumInsured * damagePercentage) / 10000
+ * 12. Weighted damage calculation: (60 * weather + 40 * satellite) / 100 == damage
+ * 13. assessedAt is recent (within 1 hour)
+ * 14. Farmer has not exceeded yearly claim limit
  */
-contract PayoutReceiver is 
+contract PayoutReceiver is
     Initializable,
     AccessControlUpgradeable,
     ReentrancyGuard,
@@ -203,6 +206,12 @@ contract PayoutReceiver is
     /// @notice Thrown when farmer has exceeded yearly claim limit
     error FarmerClaimLimitExceeded(address farmer);
 
+    /// @notice Thrown when Keystone Forwarder is not configured
+    error KeystoneForwarderNotConfigured();
+
+    /// @notice Thrown when workflow is not configured
+    error WorkflowNotConfigured();
+
     // ============ Constructor ============
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -274,22 +283,32 @@ contract PayoutReceiver is
         address reportedWorkflowAddress,
         uint256 reportedWorkflowId
     ) external nonReentrant whenNotPaused {
+        // 0. Validate Keystone Forwarder is configured (CRITICAL: prevents unauthorized reports)
+        if (keystoneForwarderAddress == address(0)) {
+            revert KeystoneForwarderNotConfigured();
+        }
+
         // 1. Validate caller is Keystone Forwarder
         if (msg.sender != keystoneForwarderAddress) {
             revert UnauthorizedForwarder(msg.sender, keystoneForwarderAddress);
         }
 
-        // 2. Validate workflow address
+        // 2. Validate workflow is configured
+        if (workflowAddress == address(0)) {
+            revert WorkflowNotConfigured();
+        }
+
+        // 3. Validate workflow address
         if (reportedWorkflowAddress != workflowAddress) {
             revert InvalidWorkflowAddress(reportedWorkflowAddress, workflowAddress);
         }
 
-        // 3. Validate workflow ID
+        // 4. Validate workflow ID
         if (reportedWorkflowId != workflowId) {
             revert InvalidWorkflowId(reportedWorkflowId, workflowId);
         }
 
-        // 4. Validate policy exists
+        // 5. Validate policy exists
         if (!policyManager.policyExists(report.policyId)) {
             revert PolicyDoesNotExist(report.policyId);
         }
@@ -297,52 +316,52 @@ contract PayoutReceiver is
         // Get policy data
         PolicyManager.Policy memory policy = policyManager.getPolicy(report.policyId);
 
-        // 5. Validate policy is active
+        // 6. Validate policy is active
         if (policy.status != PolicyManager.PolicyStatus.ACTIVE) {
             revert PolicyNotActive(report.policyId, policy.status);
         }
 
-        // 6. Validate policy not expired
+        // 7. Validate policy not expired
         if (block.timestamp > policy.endDate) {
             revert PolicyExpired(report.policyId, policy.endDate, block.timestamp);
         }
 
-        // 7. Validate not already paid
+        // 8. Validate not already paid
         if (policyPaid[report.policyId]) {
             revert PolicyAlreadyPaid(report.policyId);
         }
 
-        // 8. Validate damage above threshold
+        // 9. Validate damage above threshold
         if (report.damagePercentage < MIN_DAMAGE_THRESHOLD) {
             revert DamageBelowThreshold(report.damagePercentage, MIN_DAMAGE_THRESHOLD);
         }
 
-        // 9. Validate damage doesn't exceed maximum
+        // 10. Validate damage doesn't exceed maximum
         if (report.damagePercentage > MAX_DAMAGE_PERCENTAGE) {
             revert DamageExceedsMaximum(report.damagePercentage, MAX_DAMAGE_PERCENTAGE);
         }
 
-        // 10. Validate payout calculation
+        // 11. Validate payout calculation
         uint256 expectedPayout = (policy.sumInsured * report.damagePercentage) / BASIS_POINTS;
         if (report.payoutAmount != expectedPayout) {
             revert InvalidPayoutCalculation(report.payoutAmount, expectedPayout);
         }
 
-        // 11. Validate weighted damage calculation
+        // 12. Validate weighted damage calculation
         uint256 calculatedDamage = (
-            (WEATHER_WEIGHT * report.weatherDamage) + 
+            (WEATHER_WEIGHT * report.weatherDamage) +
             (SATELLITE_WEIGHT * report.satelliteDamage)
         ) / WEIGHT_DENOMINATOR;
         if (calculatedDamage != report.damagePercentage) {
             revert InvalidWeightedDamage(calculatedDamage, report.damagePercentage);
         }
 
-        // 12. Validate report is recent (within 1 hour)
+        // 13. Validate report is recent (within 1 hour)
         if (block.timestamp > report.assessedAt + MAX_REPORT_AGE) {
             revert ReportTooOld(report.assessedAt, block.timestamp, MAX_REPORT_AGE);
         }
 
-        // 13. Check farmer claim limit
+        // 14. Check farmer claim limit
         if (!policyManager.canFarmerClaim(policy.farmer)) {
             revert FarmerClaimLimitExceeded(policy.farmer);
         }
