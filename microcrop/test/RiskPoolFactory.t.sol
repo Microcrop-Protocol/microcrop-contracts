@@ -471,7 +471,7 @@ contract RiskPoolFactoryTest is Test {
 
         vm.startPrank(investor1);
         usdc.approve(poolAddress, depositAmount);
-        pool.deposit(depositAmount);
+        pool.deposit(depositAmount, 0);
         vm.stopPrank();
 
         assertEq(pool.balanceOf(investor1), depositAmount);
