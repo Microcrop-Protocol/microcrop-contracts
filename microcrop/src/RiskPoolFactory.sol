@@ -83,11 +83,14 @@ contract RiskPoolFactory is
 
     // ============ Roles ============
 
-    /// @notice Admin role for pool creation
+    /// @notice Admin role for platform administration
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
 
     /// @notice Upgrader role for UUPS upgrades
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+
+    /// @notice Organization role - can create private/mutual pools
+    bytes32 public constant ORGANIZATION_ROLE = keccak256("ORGANIZATION_ROLE");
 
     // ============ Constants ============
 
@@ -164,6 +167,12 @@ contract RiskPoolFactory is
 
     /// @notice Emitted when pool implementation is updated
     event PoolImplementationUpdated(address newImplementation);
+
+    /// @notice Emitted when an organization is registered
+    event OrganizationRegistered(address indexed organization);
+
+    /// @notice Emitted when an organization is removed
+    event OrganizationRemoved(address indexed organization);
 
     // ============ Errors ============
 
@@ -280,12 +289,13 @@ contract RiskPoolFactory is
 
     /**
      * @notice Create a private pool (institutions only)
+     * @dev Callable by registered organizations (ORGANIZATION_ROLE)
      * @param params Pool parameters
      * @return poolAddress Address of the new pool proxy
      */
     function createPrivatePool(PrivatePoolParams calldata params)
         external
-        onlyRole(ADMIN_ROLE)
+        onlyRole(ORGANIZATION_ROLE)
         returns (address poolAddress)
     {
         _validateBasicParams(params.name, params.symbol, params.region);
@@ -341,12 +351,13 @@ contract RiskPoolFactory is
 
     /**
      * @notice Create a mutual pool (cooperative members only)
+     * @dev Callable by registered organizations (ORGANIZATION_ROLE)
      * @param params Pool parameters
      * @return poolAddress Address of the new pool proxy
      */
     function createMutualPool(MutualPoolParams calldata params)
         external
-        onlyRole(ADMIN_ROLE)
+        onlyRole(ORGANIZATION_ROLE)
         returns (address poolAddress)
     {
         _validateBasicParams(params.name, params.symbol, params.region);
@@ -452,6 +463,34 @@ contract RiskPoolFactory is
     }
 
     // ============ Admin Functions ============
+
+    /**
+     * @notice Register an organization to allow pool creation
+     * @param organization Address of the organization to register
+     */
+    function registerOrganization(address organization) external onlyRole(ADMIN_ROLE) {
+        if (organization == address(0)) revert ZeroAddress();
+        _grantRole(ORGANIZATION_ROLE, organization);
+        emit OrganizationRegistered(organization);
+    }
+
+    /**
+     * @notice Remove an organization's pool creation privileges
+     * @param organization Address of the organization to remove
+     */
+    function removeOrganization(address organization) external onlyRole(ADMIN_ROLE) {
+        _revokeRole(ORGANIZATION_ROLE, organization);
+        emit OrganizationRemoved(organization);
+    }
+
+    /**
+     * @notice Check if an address is a registered organization
+     * @param account Address to check
+     * @return True if the address has ORGANIZATION_ROLE
+     */
+    function isOrganization(address account) external view returns (bool) {
+        return hasRole(ORGANIZATION_ROLE, account);
+    }
 
     /**
      * @notice Set default distributor for public pools
