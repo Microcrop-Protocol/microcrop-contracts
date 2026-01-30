@@ -3,6 +3,7 @@
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.28-blue)](https://docs.soliditylang.org/)
 [![Foundry](https://img.shields.io/badge/Built%20with-Foundry-orange)](https://getfoundry.sh/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Base Sepolia](https://img.shields.io/badge/Deployed-Base%20Sepolia-0052FF)](https://sepolia.basescan.org/)
 
 **Parametric crop insurance protocol for African farmers powered by Chainlink oracles.**
 
@@ -25,6 +26,7 @@ MicroCrop is a decentralized insurance protocol that:
 | `Treasury.sol` | Holds USDC reserves, collects premiums, and disburses payouts |
 | `PolicyManager.sol` | Manages insurance policy lifecycle (create, activate, claim, expire) |
 | `PayoutReceiver.sol` | Receives damage reports from Chainlink CRE and triggers automatic payouts |
+| `PolicyNFT.sol` | ERC721 NFT representing insurance policies for on-chain proof of coverage |
 
 ### Tokenization Contracts
 
@@ -33,14 +35,7 @@ MicroCrop is a decentralized insurance protocol that:
 | `RiskPool.sol` | ERC20 token representing fractional ownership of an insurance risk pool |
 | `RiskPoolFactory.sol` | Factory for creating and managing multiple RiskPool instances |
 
-### Upgradeable Contracts (UUPS Pattern)
-
-All contracts have upgradeable versions with the `V1` suffix:
-- `TreasuryV1.sol`
-- `PolicyManagerV1.sol`
-- `PayoutReceiverV1.sol`
-- `RiskPoolV1.sol`
-- `RiskPoolFactoryV1.sol`
+All contracts use the **UUPS upgradeable proxy pattern** with OpenZeppelin v5.5.0.
 
 ## 🏗️ Architecture
 
@@ -53,7 +48,7 @@ All contracts have upgradeable versions with the `V1` suffix:
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                     PayoutReceiver                              │
-│  • Validates damage reports (13 checks)                         │
+│  • Validates damage reports (14 checks)                         │
 │  • Triggers automatic payouts                                   │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -131,7 +126,7 @@ forge test --gas-report
 forge coverage --ir-minimum
 ```
 
-**Test Coverage:** 96%+ across all contracts (282 tests)
+**Test Coverage:** 114 tests passing across all contracts
 
 ## 📊 Contract Specifications
 
@@ -183,24 +178,32 @@ forge coverage --ir-minimum
 
 ## 📜 Deployment
 
-### Deploy Core Contracts
+### Deploy Contracts
 ```bash
-forge script script/DeployMicroCrop.s.sol --rpc-url $RPC_URL --private-key $PRIVATE_KEY --broadcast
-```
+# Using Foundry keystore (recommended)
+forge script script/Deploy.s.sol \
+  --rpc-url https://sepolia.base.org \
+  --account deployer \
+  --broadcast
 
-### Deploy Upgradeable Contracts
-```bash
-forge script script/DeployUpgradeable.s.sol --rpc-url $RPC_URL --private-key $PRIVATE_KEY --broadcast
-```
-
-### Upgrade a Contract
-```bash
-forge script script/UpgradeContract.s.sol \
+# Or using private key
+forge script script/Deploy.s.sol \
   --rpc-url $RPC_URL \
   --private-key $PRIVATE_KEY \
-  --broadcast \
-  -s "upgradeTreasury(address,address)" $PROXY_ADDRESS $NEW_IMPL_ADDRESS
+  --broadcast
 ```
+
+### Deployed Addresses (Base Sepolia)
+
+| Contract | Proxy Address |
+|----------|---------------|
+| Treasury | [`0x6B04966167C74e577D9d750BE1055Fa4d25C270c`](https://sepolia.basescan.org/address/0x6B04966167C74e577D9d750BE1055Fa4d25C270c) |
+| PolicyManager | [`0xDb6A11f23b8e357C0505359da4B3448d8EE5291C`](https://sepolia.basescan.org/address/0xDb6A11f23b8e357C0505359da4B3448d8EE5291C) |
+| PayoutReceiver | [`0x1151621ed6A9830E36fd6b55878a775c824fabd0`](https://sepolia.basescan.org/address/0x1151621ed6A9830E36fd6b55878a775c824fabd0) |
+| RiskPoolFactory | [`0xf68AC35ee87783437D77b7B19F824e76e95f73B9`](https://sepolia.basescan.org/address/0xf68AC35ee87783437D77b7B19F824e76e95f73B9) |
+| PolicyNFT | [`0xbD93dD9E6182B0C68e13cF408C309538794A339b`](https://sepolia.basescan.org/address/0xbD93dD9E6182B0C68e13cF408C309538794A339b) |
+
+**USDC (Base Sepolia):** `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 
 ## 🔗 Dependencies
 
@@ -213,28 +216,25 @@ forge script script/UpgradeContract.s.sol \
 ```
 microcrop/
 ├── src/
-│   ├── Treasury.sol              # Core treasury
-│   ├── PolicyManager.sol         # Policy lifecycle
-│   ├── PayoutReceiver.sol        # Chainlink CRE integration
-│   ├── RiskPool.sol              # ERC20 pool token
-│   ├── RiskPoolFactory.sol       # Pool factory
-│   ├── TreasuryV1.sol            # Upgradeable treasury
-│   ├── PolicyManagerV1.sol       # Upgradeable policy manager
-│   ├── PayoutReceiverV1.sol      # Upgradeable payout receiver
-│   ├── RiskPoolV1.sol            # Upgradeable pool token
-│   └── RiskPoolFactoryV1.sol     # Upgradeable factory
+│   ├── Treasury.sol              # USDC reserves and payout management
+│   ├── PolicyManager.sol         # Policy lifecycle management
+│   ├── PayoutReceiver.sol        # Chainlink CRE oracle integration
+│   ├── PolicyNFT.sol             # ERC721 policy certificates
+│   ├── RiskPool.sol              # ERC20 LP token for risk pools
+│   └── RiskPoolFactory.sol       # Risk pool deployment factory
 ├── test/
 │   ├── Treasury.t.sol
 │   ├── PolicyManager.t.sol
 │   ├── PayoutReceiver.t.sol
+│   ├── PolicyNFT.t.sol
 │   ├── RiskPool.t.sol
 │   ├── RiskPoolFactory.t.sol
 │   └── mocks/
 │       └── MockUSDC.sol
 ├── script/
-│   ├── DeployMicroCrop.s.sol
-│   ├── DeployUpgradeable.s.sol
-│   └── UpgradeContract.s.sol
+│   └── Deploy.s.sol              # Main deployment script
+├── abis/                         # Generated ABIs for backend integration
+│   └── addresses.json            # Deployed contract addresses
 ├── lib/
 │   ├── forge-std/
 │   ├── openzeppelin-contracts/
