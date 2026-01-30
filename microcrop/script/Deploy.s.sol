@@ -107,8 +107,7 @@ contract Deploy is Script {
             usdc,
             treasuryProxy,
             protocolWallet,
-            riskPoolImpl,
-            admin
+            riskPoolImpl
         );
         riskPoolFactoryProxy = address(new ERC1967Proxy(riskPoolFactoryImpl, factoryInitData));
         console.log("RiskPoolFactory proxy:", riskPoolFactoryProxy);
