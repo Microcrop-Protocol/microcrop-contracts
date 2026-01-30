@@ -94,6 +94,7 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
     // ============ Errors ============
 
     error ZeroAddress();
+    error InvalidPolicyId();
     error PolicyAlreadyMinted(uint256 policyId);
     error TransferWhileActive(uint256 tokenId);
     error PolicyNotFound(uint256 policyId);
@@ -145,6 +146,7 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
         uint256 plotId
     ) external onlyRole(MINTER_ROLE) returns (uint256 tokenId) {
         if (farmer == address(0)) revert ZeroAddress();
+        if (policyId == 0) revert InvalidPolicyId();
         if (policyToToken[policyId] != 0) revert PolicyAlreadyMinted(policyId);
 
         // Token ID = Policy ID for simplicity
