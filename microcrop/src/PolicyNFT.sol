@@ -50,9 +50,11 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
 
     /// @notice Coverage types matching PolicyManager
     enum CoverageType {
-        DROUGHT,
-        FLOOD,
-        BOTH
+        DROUGHT,        // 0
+        FLOOD,          // 1
+        BOTH,           // 2
+        EXCESS_RAIN,    // 3
+        COMPREHENSIVE   // 4
     }
 
     // ============ Roles ============
