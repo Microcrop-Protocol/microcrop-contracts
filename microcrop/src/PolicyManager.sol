@@ -42,9 +42,11 @@ contract PolicyManager is
      *      BOTH covers both types of events
      */
     enum CoverageType {
-        DROUGHT,
-        FLOOD,
-        BOTH
+        DROUGHT,        // 0
+        FLOOD,          // 1
+        BOTH,           // 2
+        EXCESS_RAIN,    // 3
+        COMPREHENSIVE   // 4
     }
 
     /**
@@ -91,8 +93,8 @@ contract PolicyManager is
 
     // ============ Constants ============
 
-    /// @notice Minimum sum insured: 10,000 USDC (6 decimals)
-    uint256 public constant MIN_SUM_INSURED = 10_000e6;
+    /// @notice Minimum sum insured: 100 USDC (6 decimals)
+    uint256 public constant MIN_SUM_INSURED = 100e6;
 
     /// @notice Maximum sum insured: 1,000,000 USDC (6 decimals)
     uint256 public constant MAX_SUM_INSURED = 1_000_000e6;
