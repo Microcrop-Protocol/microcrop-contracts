@@ -1,0 +1,1202 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "ADMIN_ROLE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "BACKEND_ROLE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "DEFAULT_ADMIN_ROLE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_ACTIVE_POLICIES_PER_FARMER",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_CLAIMS_PER_FARMER_PER_YEAR",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_DURATION_DAYS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_SUM_INSURED",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_DURATION_DAYS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_SUM_INSURED",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "ORACLE_ROLE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "UPGRADER_ROLE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "UPGRADE_INTERFACE_VERSION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "string",
+        "internalType": "string"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "activatePolicy",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "distributor",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "distributorName",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "region",
+        "type": "string",
+        "internalType": "string"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "canFarmerClaim",
+    "inputs": [
+      {
+        "name": "farmer",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "hasCapacity",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "cancelPolicy",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "createPolicy",
+    "inputs": [
+      {
+        "name": "farmer",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "plotId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "sumInsured",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "premium",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "durationDays",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "coverageType",
+        "type": "uint8",
+        "internalType": "enum PolicyManager.CoverageType"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "getCurrentYear",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "year",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getFarmerActiveCount",
+    "inputs": [
+      {
+        "name": "farmer",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "count",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getFarmerClaimCount",
+    "inputs": [
+      {
+        "name": "farmer",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "year",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "count",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getFarmerPolicies",
+    "inputs": [
+      {
+        "name": "farmer",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "policyIds",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getPolicy",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "policy",
+        "type": "tuple",
+        "internalType": "struct PolicyManager.Policy",
+        "components": [
+          {
+            "name": "id",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "farmer",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "plotId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "sumInsured",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "premium",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "startDate",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "endDate",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "coverageType",
+            "type": "uint8",
+            "internalType": "enum PolicyManager.CoverageType"
+          },
+          {
+            "name": "status",
+            "type": "uint8",
+            "internalType": "enum PolicyManager.PolicyStatus"
+          },
+          {
+            "name": "createdAt",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getRoleAdmin",
+    "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getTotalPolicies",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "total",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "grantRole",
+    "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "hasRole",
+    "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "incrementClaimCount",
+    "inputs": [
+      {
+        "name": "farmer",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "initialize",
+    "inputs": [
+      {
+        "name": "_admin",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "isPolicyActive",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "isActive",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "markAsClaimed",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "policyExists",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "exists",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "policyNFT",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract PolicyNFT"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "proxiableUUID",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "renounceRole",
+    "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "callerConfirmation",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "revokeRole",
+    "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setPolicyNFT",
+    "inputs": [
+      {
+        "name": "_policyNFT",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "supportsInterface",
+    "inputs": [
+      {
+        "name": "interfaceId",
+        "type": "bytes4",
+        "internalType": "bytes4"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "upgradeToAndCall",
+    "inputs": [
+      {
+        "name": "newImplementation",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "data",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "version",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "string",
+        "internalType": "string"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "event",
+    "name": "ClaimCountIncremented",
+    "inputs": [
+      {
+        "name": "farmer",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "year",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "newCount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Initialized",
+    "inputs": [
+      {
+        "name": "version",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PolicyActivated",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "activatedAt",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PolicyCancelled",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "cancelledAt",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PolicyClaimed",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "claimedAt",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PolicyCreated",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "farmer",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "plotId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "sumInsured",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "premium",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "startDate",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "endDate",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "coverageType",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum PolicyManager.CoverageType"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PolicyNFTSet",
+    "inputs": [
+      {
+        "name": "policyNFT",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RoleAdminChanged",
+    "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "previousAdminRole",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "newAdminRole",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RoleGranted",
+    "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "account",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "sender",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RoleRevoked",
+    "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "account",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "sender",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Upgraded",
+    "inputs": [
+      {
+        "name": "implementation",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "AccessControlBadConfirmation",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AccessControlUnauthorizedAccount",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "neededRole",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "AddressEmptyCode",
+    "inputs": [
+      {
+        "name": "target",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ERC1967InvalidImplementation",
+    "inputs": [
+      {
+        "name": "implementation",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ERC1967NonPayable",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "FailedCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidDuration",
+    "inputs": [
+      {
+        "name": "durationDays",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "minDays",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxDays",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidInitialization",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidPolicyStatus",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "current",
+        "type": "uint8",
+        "internalType": "enum PolicyManager.PolicyStatus"
+      },
+      {
+        "name": "expected",
+        "type": "uint8",
+        "internalType": "enum PolicyManager.PolicyStatus"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "NotInitializing",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PolicyDoesNotExist",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PolicyExpired",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "endDate",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "currentTime",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PolicyNFTNotSet",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReentrancyGuardReentrantCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SumInsuredTooHigh",
+    "inputs": [
+      {
+        "name": "provided",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maximum",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SumInsuredTooLow",
+    "inputs": [
+      {
+        "name": "provided",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "minimum",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TooManyActivePolicies",
+    "inputs": [
+      {
+        "name": "farmer",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "current",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "max",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TooManyClaimsThisYear",
+    "inputs": [
+      {
+        "name": "farmer",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "year",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "current",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "max",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UUPSUnauthorizedCallContext",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UUPSUnsupportedProxiableUUID",
+    "inputs": [
+      {
+        "name": "slot",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ZeroAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAddressDistributor",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAddressFarmer",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroPremium",
+    "inputs": []
+  }
+]
