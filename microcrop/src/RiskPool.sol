@@ -54,9 +54,11 @@ contract RiskPool is
 
     /// @notice Coverage type for the pool
     enum CoverageType {
-        DROUGHT,
-        FLOOD,
-        BOTH
+        DROUGHT,        // 0
+        FLOOD,          // 1
+        BOTH,           // 2
+        EXCESS_RAIN,    // 3
+        COMPREHENSIVE   // 4
     }
 
     // ============ Roles ============
