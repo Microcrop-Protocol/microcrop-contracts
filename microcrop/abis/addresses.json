@@ -6,7 +6,7 @@
       "PolicyManager": "0xDb6A11f23b8e357C0505359da4B3448d8EE5291C",
       "PayoutReceiver": "0x1151621ed6A9830E36fd6b55878a775c824fabd0",
       "RiskPoolFactory": "0xf68AC35ee87783437D77b7B19F824e76e95f73B9",
-      "PolicyNFT": "0xbD93dD9E6182B0C68e13cF408C309538794A339b",
+      "PolicyNFT": "0xFe9e345f3D2B1BeBcD99182b33ddb70Ec95a344a",
       "USDC": "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
     },
     "roles": {
@@ -15,7 +15,7 @@
     },
     "implementations": {
       "Treasury": "0xe416CA2822Ed2e81c7ef7ED7A08E5C629802A4f1",
-      "PolicyManager": "0x710C6d82149b13eCBd29a2fB982bd571233b3317",
+      "PolicyManager": "0x60AF85fE539F1E4E374c0d094192B480378e3414",
       "PayoutReceiver": "0x047c8aAF3c0E0b4bBC8ad148B3CA844f1b3a4b70",
       "RiskPool": "0xC32C931519De4eb82f287723fdF145fAabb7f51c",
       "RiskPoolFactory": "0x6e7d4FeD6DD39864C0785ba10fef2Bc0faE8cb36"
