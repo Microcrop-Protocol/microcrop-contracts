@@ -502,6 +502,15 @@ contract RiskPoolFactory is
     }
 
     /**
+     * @notice Update protocol treasury address
+     * @param newProtocolTreasury New protocol treasury address
+     */
+    function setProtocolTreasury(address newProtocolTreasury) external onlyRole(ADMIN_ROLE) {
+        if (newProtocolTreasury == address(0)) revert ZeroAddress();
+        protocolTreasury = newProtocolTreasury;
+    }
+
+    /**
      * @notice Update pool implementation for new pools
      * @param newImplementation New implementation address
      */
