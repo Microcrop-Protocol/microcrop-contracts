@@ -318,8 +318,13 @@ contract RiskPoolTest is Test {
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
         pool.deposit(depositAmount, 0);
+        vm.stopPrank();
+
+        // Advance past lock-up period
+        vm.warp(block.timestamp + 1 days + 1);
 
         // Withdraw
+        vm.startPrank(investor1);
         uint256 withdrawAmount = 500e6;
         pool.withdraw(withdrawAmount, 0);
         vm.stopPrank();
@@ -335,7 +340,12 @@ contract RiskPoolTest is Test {
         vm.startPrank(investor1);
         usdc.approve(address(pool), depositAmount);
         pool.deposit(depositAmount, 0);
+        vm.stopPrank();
 
+        // Advance past lock-up period
+        vm.warp(block.timestamp + 1 days + 1);
+
+        vm.startPrank(investor1);
         vm.expectRevert(RiskPool.InsufficientTokens.selector);
         pool.withdraw(depositAmount + 1, 0);
         vm.stopPrank();
@@ -519,8 +529,8 @@ contract RiskPoolTest is Test {
         uint256 depositAmount = 100_000e6;
         int256 exposureIncrease = 10_000e6;
 
-        // Grant TREASURY_ROLE
-        pool.grantRole(pool.TREASURY_ROLE(), protocolTreasury);
+        // Grant POLICY_MANAGER_ROLE for exposure tracking
+        pool.grantRole(pool.POLICY_MANAGER_ROLE(), protocolTreasury);
 
         // Deposit
         vm.startPrank(investor1);
