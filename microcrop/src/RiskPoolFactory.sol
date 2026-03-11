@@ -147,8 +147,11 @@ contract RiskPoolFactory is
     /// @notice Default distributor for public pools
     address public defaultDistributor;
 
+    /// @notice PolicyManager contract address (for granting POLICY_MANAGER_ROLE on pools)
+    address public policyManager;
+
     /// @notice Storage gap for future upgrades
-    uint256[40] private __gap;
+    uint256[39] private __gap;
 
     // ============ Events ============
 
@@ -173,6 +176,9 @@ contract RiskPoolFactory is
 
     /// @notice Emitted when an organization is removed
     event OrganizationRemoved(address indexed organization);
+
+    /// @notice Emitted when policy manager is updated
+    event PolicyManagerUpdated(address indexed newPolicyManager);
 
     // ============ Errors ============
 
@@ -328,12 +334,6 @@ contract RiskPoolFactory is
 
         poolAddress = _deployPool(newPoolId, config);
 
-        // Grant admin role to pool owner
-        RiskPool(poolAddress).grantRole(
-            RiskPool(poolAddress).ADMIN_ROLE(),
-            params.poolOwner
-        );
-
         // Add to owner's pools
         poolsByOwner[params.poolOwner].push(poolAddress);
 
@@ -387,12 +387,6 @@ contract RiskPoolFactory is
         });
 
         poolAddress = _deployPool(newPoolId, config);
-
-        // Grant admin role to cooperative
-        RiskPool(poolAddress).grantRole(
-            RiskPool(poolAddress).ADMIN_ROLE(),
-            params.poolOwner
-        );
 
         // Add to owner's pools
         poolsByOwner[params.poolOwner].push(poolAddress);
@@ -449,10 +443,34 @@ contract RiskPoolFactory is
             treasury
         );
 
-        // Grant DEFAULT_ADMIN_ROLE to factory admin
-        RiskPool(poolAddress).grantRole(
-            RiskPool(poolAddress).DEFAULT_ADMIN_ROLE(),
-            msg.sender
+        // Grant POLICY_MANAGER_ROLE to PolicyManager contract
+        if (policyManager != address(0)) {
+            RiskPool(poolAddress).grantRole(
+                RiskPool(poolAddress).POLICY_MANAGER_ROLE(),
+                policyManager
+            );
+        }
+
+        // Grant DEFAULT_ADMIN_ROLE to factory (protocol retains governance over pools)
+        // Do NOT grant DEFAULT_ADMIN_ROLE to organizations — only ADMIN_ROLE via poolOwner
+
+        // Grant ADMIN_ROLE to pool owner if set (private/mutual pools)
+        if (config.poolOwner != address(0)) {
+            RiskPool(poolAddress).grantRole(
+                RiskPool(poolAddress).ADMIN_ROLE(),
+                config.poolOwner
+            );
+        }
+
+        // Renounce ADMIN_ROLE and UPGRADER_ROLE but retain DEFAULT_ADMIN_ROLE
+        // so the factory (protocol) keeps governance over all deployed pools
+        RiskPool(poolAddress).renounceRole(
+            RiskPool(poolAddress).ADMIN_ROLE(),
+            address(this)
+        );
+        RiskPool(poolAddress).renounceRole(
+            RiskPool(poolAddress).UPGRADER_ROLE(),
+            address(this)
         );
 
         // Store in registry
@@ -508,6 +526,16 @@ contract RiskPoolFactory is
     function setProtocolTreasury(address newProtocolTreasury) external onlyRole(ADMIN_ROLE) {
         if (newProtocolTreasury == address(0)) revert ZeroAddress();
         protocolTreasury = newProtocolTreasury;
+    }
+
+    /**
+     * @notice Set the PolicyManager contract address
+     * @param _policyManager Address of the PolicyManager contract
+     */
+    function setPolicyManager(address _policyManager) external onlyRole(ADMIN_ROLE) {
+        if (_policyManager == address(0)) revert ZeroAddress();
+        policyManager = _policyManager;
+        emit PolicyManagerUpdated(_policyManager);
     }
 
     /**
