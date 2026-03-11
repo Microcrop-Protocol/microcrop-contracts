@@ -99,8 +99,9 @@ contract RiskPoolFactoryTest is Test {
         ERC1967Proxy proxy = new ERC1967Proxy(address(factoryImplementation), initData);
         factory = RiskPoolFactory(address(proxy));
 
-        // Set default distributor
+        // Set default distributor and policy manager
         factory.setDefaultDistributor(defaultDistributor);
+        factory.setPolicyManager(address(0x8)); // placeholder PolicyManager
 
         // Grant ORGANIZATION_ROLE to test contract for private/mutual pool creation
         factory.registerOrganization(address(this));
