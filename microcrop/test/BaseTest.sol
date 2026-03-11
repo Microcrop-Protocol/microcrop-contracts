@@ -7,7 +7,9 @@ import {Treasury} from "../src/Treasury.sol";
 import {PolicyManager} from "../src/PolicyManager.sol";
 import {PayoutReceiver} from "../src/PayoutReceiver.sol";
 import {PolicyNFT} from "../src/PolicyNFT.sol";
+import {RiskPool} from "../src/RiskPool.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
+import {MockRiskPoolFactory} from "./mocks/MockRiskPoolFactory.sol";
 
 /**
  * @title BaseTest
@@ -22,12 +24,16 @@ abstract contract BaseTest is Test {
     PayoutReceiver public payoutReceiverImpl;
     PayoutReceiver public payoutReceiver;
     PolicyNFT public policyNFT;
+    RiskPool public riskPoolImpl;
+    RiskPool public riskPool;
     MockUSDC public usdc;
+    MockRiskPoolFactory public mockFactory;
 
     // ============ Proxies ============
     ERC1967Proxy public treasuryProxy;
     ERC1967Proxy public policyManagerProxy;
     ERC1967Proxy public payoutReceiverProxy;
+    ERC1967Proxy public riskPoolProxy;
 
     // ============ Test Addresses ============
     address public admin = address(1);
@@ -74,6 +80,32 @@ abstract contract BaseTest is Test {
         policyManagerProxy = new ERC1967Proxy(address(policyManagerImpl), policyManagerInitData);
         policyManager = PolicyManager(address(policyManagerProxy));
 
+        // Deploy RiskPool implementation and proxy
+        riskPoolImpl = new RiskPool();
+        RiskPool.PoolConfig memory poolConfig = RiskPool.PoolConfig({
+            usdc: address(usdc),
+            poolId: 1,
+            name: "Test Risk Pool",
+            symbol: "tRP",
+            poolType: RiskPool.PoolType.PUBLIC,
+            coverageType: RiskPool.CoverageType.BOTH,
+            region: REGION,
+            poolOwner: admin,
+            minDeposit: 100e6,
+            maxDeposit: 1_000_000e6,
+            targetCapital: 500_000e6,
+            maxCapital: 2_000_000e6,
+            productBuilder: admin,
+            protocolTreasury: address(0x1), // placeholder
+            defaultDistributor: distributor
+        });
+        bytes memory riskPoolInitData = abi.encodeWithSelector(
+            RiskPool.initialize.selector,
+            poolConfig
+        );
+        riskPoolProxy = new ERC1967Proxy(address(riskPoolImpl), riskPoolInitData);
+        riskPool = RiskPool(address(riskPoolProxy));
+
         // Deploy PayoutReceiver implementation and proxy
         payoutReceiverImpl = new PayoutReceiver();
         bytes memory payoutReceiverInitData = abi.encodeWithSelector(
@@ -95,6 +127,14 @@ abstract contract BaseTest is Test {
         // Set PolicyNFT on PolicyManager
         policyManager.setPolicyNFT(address(policyNFT));
         policyNFT.grantRole(policyNFT.MINTER_ROLE(), address(policyManager));
+
+        // Grant PolicyManager the POLICY_MANAGER_ROLE on the RiskPool for exposure tracking
+        riskPool.grantRole(riskPool.POLICY_MANAGER_ROLE(), address(policyManager));
+
+        // Deploy mock factory and register the risk pool
+        mockFactory = new MockRiskPoolFactory();
+        mockFactory.registerPool(address(riskPool));
+        policyManager.setRiskPoolFactory(address(mockFactory));
 
         vm.stopPrank();
 
