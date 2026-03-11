@@ -291,13 +291,40 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
             '<text x="30" y="270" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8">Sum Insured</text>',
             '<text x="30" y="290" font-family="Arial, sans-serif" font-size="16" fill="#22c55e">$', _formatUSDC(cert.sumInsured), '</text>',
             '<text x="30" y="330" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8">Region</text>',
-            '<text x="30" y="350" font-family="Arial, sans-serif" font-size="16" fill="#ffffff">', cert.region, '</text>',
+            '<text x="30" y="350" font-family="Arial, sans-serif" font-size="16" fill="#ffffff">', _sanitizeSVG(cert.region), '</text>',
             '<text x="30" y="390" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8">Distributor</text>',
-            '<text x="30" y="410" font-family="Arial, sans-serif" font-size="16" fill="#ffffff">', cert.distributorName, '</text>',
+            '<text x="30" y="410" font-family="Arial, sans-serif" font-size="16" fill="#ffffff">', _sanitizeSVG(cert.distributorName), '</text>',
             // Footer
             '<line x1="30" y1="450" x2="370" y2="450" stroke="#3b82f6" stroke-width="1"/>',
             '<text x="200" y="475" font-family="Arial, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">Powered by MicroCrop Protocol</text>'
         ));
+    }
+
+    /**
+     * @notice Sanitize a string for safe SVG and JSON embedding
+     * @dev Strips < > " and \ to prevent SVG injection and JSON breakout
+     * @param input The raw input string
+     * @return sanitized The sanitized string safe for SVG and JSON
+     */
+    function _sanitizeSVG(string memory input) internal pure returns (string memory) {
+        bytes memory inputBytes = bytes(input);
+        // Count safe bytes (exclude < > " \)
+        uint256 safeCount = 0;
+        for (uint256 i = 0; i < inputBytes.length; i++) {
+            bytes1 b = inputBytes[i];
+            if (b != 0x3C && b != 0x3E && b != 0x22 && b != 0x5C) {
+                safeCount++;
+            }
+        }
+        bytes memory result = new bytes(safeCount);
+        uint256 j = 0;
+        for (uint256 i = 0; i < inputBytes.length; i++) {
+            bytes1 b = inputBytes[i];
+            if (b != 0x3C && b != 0x3E && b != 0x22 && b != 0x5C) {
+                result[j++] = b;
+            }
+        }
+        return string(result);
     }
 
     /**
@@ -315,17 +342,20 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
         string memory coverageStr = cert.coverageType == CoverageType.DROUGHT ? "Drought" :
                                     cert.coverageType == CoverageType.FLOOD ? "Flood" : "Drought + Flood";
 
+        string memory safeRegion = _sanitizeSVG(cert.region);
+        string memory safeDistributor = _sanitizeSVG(cert.distributorName);
+
         return string(abi.encodePacked(
             '{"name":"MicroCrop Policy #', cert.policyId.toString(), '",',
-            '"description":"Insurance policy certificate for crop coverage in ', cert.region, '",',
+            '"description":"Insurance policy certificate for crop coverage in ', safeRegion, '",',
             '"image":"data:image/svg+xml;base64,', Base64.encode(bytes(svg)), '",',
             '"attributes":[',
             '{"trait_type":"Policy ID","value":"', cert.policyId.toString(), '"},',
             '{"trait_type":"Coverage Type","value":"', coverageStr, '"},',
             '{"trait_type":"Sum Insured","value":"$', _formatUSDC(cert.sumInsured), '"},',
             '{"trait_type":"Premium","value":"$', _formatUSDC(cert.premium), '"},',
-            '{"trait_type":"Region","value":"', cert.region, '"},',
-            '{"trait_type":"Distributor","value":"', cert.distributorName, '"},',
+            '{"trait_type":"Region","value":"', safeRegion, '"},',
+            '{"trait_type":"Distributor","value":"', safeDistributor, '"},',
             '{"trait_type":"Status","value":"', cert.isActive ? "Active" : "Inactive", '"},',
             '{"trait_type":"Plot ID","value":"', cert.plotId.toString(), '"}',
             ']}'
