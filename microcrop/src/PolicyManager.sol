@@ -7,6 +7,16 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/U
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {PolicyNFT} from "./PolicyNFT.sol";
 
+/// @notice Minimal interface for RiskPool exposure tracking
+interface IRiskPoolExposure {
+    function updateExposure(uint256 policyId, int256 delta) external;
+}
+
+/// @notice Minimal interface for RiskPoolFactory pool validation
+interface IRiskPoolFactory {
+    function isValidPool(address poolAddress) external view returns (bool);
+}
+
 /**
  * @title PolicyManager
  * @notice Manages the complete lifecycle of parametric crop insurance policies
@@ -150,8 +160,14 @@ contract PolicyManager is
     /// @notice PolicyNFT contract for minting farmer certificates
     PolicyNFT public policyNFT;
 
-    /// @dev Reserved storage gap for future upgrades (49 slots - reduced by 1 for policyNFT)
-    uint256[49] private __gap;
+    /// @notice Mapping from policy ID to the RiskPool backing it
+    mapping(uint256 => address) private _policyPools;
+
+    /// @notice RiskPoolFactory contract for pool validation
+    IRiskPoolFactory public riskPoolFactory;
+
+    /// @dev Reserved storage gap for future upgrades (47 slots - reduced by 3 for policyNFT, _policyPools, riskPoolFactory)
+    uint256[47] private __gap;
 
     // ============ Events ============
 
@@ -197,6 +213,13 @@ contract PolicyManager is
      * @param cancelledAt Timestamp of cancellation
      */
     event PolicyCancelled(uint256 indexed policyId, uint256 cancelledAt);
+
+    /**
+     * @notice Emitted when a policy is expired
+     * @param policyId Unique identifier of the expired policy
+     * @param expiredAt Timestamp of expiration processing
+     */
+    event PolicyExpiredByBackend(uint256 indexed policyId, uint256 expiredAt);
 
     /**
      * @notice Emitted when the PolicyNFT contract is set
@@ -257,6 +280,15 @@ contract PolicyManager is
     /// @notice Thrown when distributor address is zero
     error ZeroAddressDistributor();
 
+    /// @notice Thrown when pool address is zero
+    error ZeroAddressPool();
+
+    /// @notice Thrown when pool address is not registered in the factory
+    error InvalidPool(address poolAddress);
+
+    /// @notice Thrown when riskPoolFactory has not been configured
+    error FactoryNotSet();
+
     // ============ Constructor ============
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -301,6 +333,16 @@ contract PolicyManager is
         if (_policyNFT == address(0)) revert ZeroAddress();
         policyNFT = PolicyNFT(_policyNFT);
         emit PolicyNFTSet(_policyNFT);
+    }
+
+    /**
+     * @notice Sets the RiskPoolFactory contract address for pool validation
+     * @dev Only callable by ADMIN_ROLE.
+     * @param _factory Address of the RiskPoolFactory contract
+     */
+    function setRiskPoolFactory(address _factory) external onlyRole(ADMIN_ROLE) {
+        if (_factory == address(0)) revert ZeroAddress();
+        riskPoolFactory = IRiskPoolFactory(_factory);
     }
 
     // ============ External Functions ============
@@ -420,7 +462,8 @@ contract PolicyManager is
         uint256 policyId,
         address distributor,
         string calldata distributorName,
-        string calldata region
+        string calldata region,
+        address poolAddress
     )
         external
         onlyRole(BACKEND_ROLE)
@@ -434,6 +477,19 @@ contract PolicyManager is
         // Check distributor address
         if (distributor == address(0)) {
             revert ZeroAddressDistributor();
+        }
+
+        // Check pool address
+        if (poolAddress == address(0)) {
+            revert ZeroAddressPool();
+        }
+
+        // Validate pool is registered in the factory
+        if (address(riskPoolFactory) == address(0)) {
+            revert FactoryNotSet();
+        }
+        if (!riskPoolFactory.isValidPool(poolAddress)) {
+            revert InvalidPool(poolAddress);
         }
 
         Policy storage policy = _policies[policyId];
@@ -452,13 +508,32 @@ contract PolicyManager is
             );
         }
 
-        // Activate the policy
+        // Enforce active policy limit at activation time
+        uint256 currentActive = _farmerActiveCounts[policy.farmer];
+        if (currentActive >= MAX_ACTIVE_POLICIES_PER_FARMER) {
+            revert TooManyActivePolicies(
+                policy.farmer,
+                currentActive,
+                MAX_ACTIVE_POLICIES_PER_FARMER
+            );
+        }
+
+        // Activate the policy — reset coverage period to start now
         policy.status = PolicyStatus.ACTIVE;
+        uint256 duration = policy.endDate - policy.startDate;
+        policy.startDate = block.timestamp;
+        policy.endDate = block.timestamp + duration;
+
+        // Store the backing pool for this policy
+        _policyPools[policyId] = poolAddress;
 
         // Increment farmer's active policy count
         unchecked {
             ++_farmerActiveCounts[policy.farmer];
         }
+
+        // Update pool exposure
+        IRiskPoolExposure(poolAddress).updateExposure(policyId, int256(policy.sumInsured));
 
         // Mint NFT certificate to the farmer
         policyNFT.mintPolicy(
@@ -515,6 +590,12 @@ contract PolicyManager is
             unchecked {
                 --_farmerActiveCounts[policy.farmer];
             }
+        }
+
+        // Release pool exposure
+        address pool = _policyPools[policyId];
+        if (pool != address(0)) {
+            IRiskPoolExposure(pool).updateExposure(policyId, -int256(policy.sumInsured));
         }
 
         // Update NFT status to inactive (allows transfer)
@@ -587,12 +668,17 @@ contract PolicyManager is
             );
         }
 
-        // If policy was active, decrement active count and update NFT
+        // If policy was active, decrement active count, release exposure, and update NFT
         if (policy.status == PolicyStatus.ACTIVE) {
             if (_farmerActiveCounts[policy.farmer] > 0) {
                 unchecked {
                     --_farmerActiveCounts[policy.farmer];
                 }
+            }
+            // Release pool exposure
+            address pool = _policyPools[policyId];
+            if (pool != address(0)) {
+                IRiskPoolExposure(pool).updateExposure(policyId, -int256(policy.sumInsured));
             }
             // Update NFT status to inactive (allows transfer)
             if (address(policyNFT) != address(0)) {
@@ -603,6 +689,61 @@ contract PolicyManager is
         policy.status = PolicyStatus.CANCELLED;
 
         emit PolicyCancelled(policyId, block.timestamp);
+    }
+
+    /**
+     * @notice Expires an active policy whose end date has passed
+     * @dev Only callable by addresses with BACKEND_ROLE. Decrements the
+     *      farmer's active policy count so the counter stays accurate
+     *      without requiring an unbounded loop.
+     *
+     * @param policyId The unique identifier of the policy to expire
+     */
+    function expirePolicy(uint256 policyId)
+        external
+        onlyRole(BACKEND_ROLE)
+        nonReentrant
+    {
+        Policy storage policy = _policies[policyId];
+
+        if (policy.id == 0) {
+            revert PolicyDoesNotExist(policyId);
+        }
+
+        if (policy.status != PolicyStatus.ACTIVE) {
+            revert InvalidPolicyStatus(
+                policyId,
+                policy.status,
+                PolicyStatus.ACTIVE
+            );
+        }
+
+        // Must actually be past end date
+        if (block.timestamp <= policy.endDate) {
+            revert InvalidDuration(0, 0, 0);
+        }
+
+        // Decrement active count
+        if (_farmerActiveCounts[policy.farmer] > 0) {
+            unchecked {
+                --_farmerActiveCounts[policy.farmer];
+            }
+        }
+
+        // Release pool exposure
+        address pool = _policyPools[policyId];
+        if (pool != address(0)) {
+            IRiskPoolExposure(pool).updateExposure(policyId, -int256(policy.sumInsured));
+        }
+
+        // Update NFT status to inactive
+        if (address(policyNFT) != address(0)) {
+            policyNFT.updatePolicyStatus(policyId, false);
+        }
+
+        policy.status = PolicyStatus.EXPIRED;
+
+        emit PolicyExpiredByBackend(policyId, block.timestamp);
     }
 
     // ============ View Functions ============
@@ -703,6 +844,15 @@ contract PolicyManager is
      */
     function policyExists(uint256 policyId) external view returns (bool exists) {
         return _policies[policyId].id != 0;
+    }
+
+    /**
+     * @notice Returns the RiskPool address backing a policy
+     * @param policyId The unique identifier of the policy
+     * @return pool The RiskPool address (zero if not set, e.g. pre-upgrade policies)
+     */
+    function getPolicyPool(uint256 policyId) external view returns (address pool) {
+        return _policyPools[policyId];
     }
 
     /**
