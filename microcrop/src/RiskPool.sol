@@ -75,6 +75,9 @@ contract RiskPool is
     /// @notice Upgrader role for UUPS upgrades
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
 
+    /// @notice Policy manager role for exposure tracking
+    bytes32 public constant POLICY_MANAGER_ROLE = keccak256("POLICY_MANAGER_ROLE");
+
     // ============ Constants ============
 
     /// @notice Precision for token value calculations (18 decimals)
@@ -96,9 +99,12 @@ contract RiskPool is
     uint256 public constant BPS_DENOMINATOR = 10000;
 
     /// @notice Virtual offset for share price calculation (prevents inflation attack)
-    /// @dev Adding 1 USDC (1e6) of virtual assets and shares prevents first depositor manipulation
-    uint256 public constant VIRTUAL_SHARES = 1e6;
-    uint256 public constant VIRTUAL_ASSETS = 1e6;
+    /// @dev 1e8 = $100 USDC virtual offset — balances inflation protection vs LP premium leakage
+    uint256 public constant VIRTUAL_SHARES = 1e8;
+    uint256 public constant VIRTUAL_ASSETS = 1e8;
+
+    /// @notice Minimum lock period after deposit before withdrawal is allowed
+    uint256 public constant MIN_LOCK_PERIOD = 1 days;
 
     // ============ Storage ============
 
@@ -165,8 +171,11 @@ contract RiskPool is
     /// @notice Number of unique investors
     uint256 public investorCount;
 
+    /// @notice Timestamp of last deposit per investor (for lock-up enforcement)
+    mapping(address => uint256) public depositTimestamp;
+
     /// @notice Storage gap for future upgrades
-    uint256[40] private __gap;
+    uint256[39] private __gap;
 
     // ============ Events ============
 
@@ -227,6 +236,9 @@ contract RiskPool is
     /// @notice Emitted when default distributor is updated
     event DefaultDistributorUpdated(address oldDistributor, address newDistributor);
 
+    /// @notice Emitted when protocol treasury is updated
+    event ProtocolTreasuryUpdated(address oldTreasury, address newTreasury);
+
     // ============ Errors ============
 
     error ZeroAddress();
@@ -245,6 +257,7 @@ contract RiskPool is
     error InvalidRecipient();
     error ZeroTokensMinted();
     error SlippageExceeded(uint256 expected, uint256 actual);
+    error WithdrawalTooEarly(uint256 unlockTime, uint256 currentTime);
 
     // ============ Structs ============
 
@@ -379,6 +392,7 @@ contract RiskPool is
 
         // Update tracking
         totalDeposited[msg.sender] += usdcAmount;
+        depositTimestamp[msg.sender] = block.timestamp;
 
         // Mint LP tokens
         _mint(msg.sender, tokensToMint);
@@ -396,6 +410,12 @@ contract RiskPool is
         if (tokenAmount == 0) revert ZeroAmount();
         if (balanceOf(msg.sender) < tokenAmount) revert InsufficientTokens();
 
+        // Enforce lock-up period
+        uint256 unlockTime = depositTimestamp[msg.sender] + MIN_LOCK_PERIOD;
+        if (block.timestamp < unlockTime) {
+            revert WithdrawalTooEarly(unlockTime, block.timestamp);
+        }
+
         // Calculate USDC to return at current NAV
         uint256 tokenPrice = getTokenPrice();
         uint256 usdcAmount = (tokenAmount * tokenPrice) / PRECISION;
@@ -411,6 +431,13 @@ contract RiskPool is
 
         // Burn LP tokens first (CEI pattern)
         _burn(msg.sender, tokenAmount);
+
+        // Update deposit tracking
+        if (usdcAmount >= totalDeposited[msg.sender]) {
+            totalDeposited[msg.sender] = 0;
+        } else {
+            totalDeposited[msg.sender] -= usdcAmount;
+        }
 
         // Transfer USDC to LP
         usdc.safeTransfer(msg.sender, usdcAmount);
@@ -442,22 +469,34 @@ contract RiskPool is
         uint256 protocolShare = (grossPremium * PROTOCOL_SHARE_BPS) / BPS_DENOMINATOR;
         uint256 distributorShare = (grossPremium * DISTRIBUTOR_SHARE_BPS) / BPS_DENOMINATOR;
 
-        // Distribute builder share
+        // Distribute builder share (pull-safe: fallback to LP on transfer failure)
         if (productBuilder != address(0) && builderShare > 0) {
-            usdc.safeTransfer(productBuilder, builderShare);
+            try IERC20(address(usdc)).transfer(productBuilder, builderShare) returns (bool success) {
+                if (!success) lpShare += builderShare;
+            } catch {
+                lpShare += builderShare;
+            }
         } else {
             lpShare += builderShare;
         }
 
         // Distribute protocol share
         if (protocolShare > 0) {
-            usdc.safeTransfer(protocolTreasury, protocolShare);
+            try IERC20(address(usdc)).transfer(protocolTreasury, protocolShare) returns (bool success) {
+                if (!success) lpShare += protocolShare;
+            } catch {
+                lpShare += protocolShare;
+            }
         }
 
         // Distribute distributor share
         address actualDistributor = distributor != address(0) ? distributor : defaultDistributor;
         if (actualDistributor != address(0) && distributorShare > 0) {
-            usdc.safeTransfer(actualDistributor, distributorShare);
+            try IERC20(address(usdc)).transfer(actualDistributor, distributorShare) returns (bool success) {
+                if (!success) lpShare += distributorShare;
+            } catch {
+                lpShare += distributorShare;
+            }
         } else {
             lpShare += distributorShare;
         }
@@ -502,7 +541,7 @@ contract RiskPool is
     function updateExposure(
         uint256 policyId,
         int256 delta
-    ) external onlyRole(TREASURY_ROLE) {
+    ) external onlyRole(POLICY_MANAGER_ROLE) {
         if (delta > 0) {
             activeExposure += uint256(delta);
         } else if (delta < 0) {
@@ -550,6 +589,15 @@ contract RiskPool is
     }
 
     /**
+     * @notice Update maximum pool capital
+     * @param newMax New maximum capital
+     */
+    function setMaxCapital(uint256 newMax) external onlyRole(ADMIN_ROLE) {
+        if (newMax < targetCapital) revert InvalidAmount();
+        maxCapital = newMax;
+    }
+
+    /**
      * @notice Update maximum deposit amount
      * @param newMax New maximum deposit
      */
@@ -581,6 +629,17 @@ contract RiskPool is
     }
 
     /**
+     * @notice Update protocol treasury address
+     * @param newTreasury New protocol treasury address
+     */
+    function setProtocolTreasury(address newTreasury) external onlyRole(ADMIN_ROLE) {
+        if (newTreasury == address(0)) revert ZeroAddress();
+        address oldTreasury = protocolTreasury;
+        protocolTreasury = newTreasury;
+        emit ProtocolTreasuryUpdated(oldTreasury, newTreasury);
+    }
+
+    /**
      * @notice Whitelist depositor for private/mutual pools
      * @param depositor Address to whitelist
      */
@@ -609,6 +668,47 @@ contract RiskPool is
      */
     function unpause() external onlyRole(ADMIN_ROLE) {
         _unpause();
+    }
+
+    // ============ Internal Overrides ============
+
+    /**
+     * @notice Override ERC20 _update to adjust totalDeposited tracking on LP transfers
+     * @dev Prevents bypassing maxDeposit by transferring LP tokens to a fresh address.
+     *      Also resets deposit timestamp for the receiver to enforce lock-up.
+     */
+    function _update(address from, address to, uint256 value) internal override {
+        super._update(from, to, value);
+
+        // Only handle transfers (not mints or burns, which are managed by deposit/withdraw)
+        if (from != address(0) && to != address(0)) {
+            // Enforce depositor role for private/mutual pools on transfers
+            if (poolType != PoolType.PUBLIC) {
+                if (!hasRole(DEPOSITOR_ROLE, to)) revert NotAuthorized();
+            }
+
+            // Move proportional totalDeposited from sender to receiver
+            uint256 senderDeposited = totalDeposited[from];
+            if (senderDeposited > 0) {
+                uint256 senderBalanceAfter = balanceOf(from);
+                uint256 depositedMoved;
+                if (senderBalanceAfter == 0) {
+                    depositedMoved = senderDeposited;
+                } else {
+                    depositedMoved = (value * senderDeposited) / (senderBalanceAfter + value);
+                }
+                totalDeposited[from] -= depositedMoved;
+                totalDeposited[to] += depositedMoved;
+                if (totalDeposited[to] > maxDeposit) revert ExceedsMaximumDeposit();
+            }
+
+            // Only reset lock period if receiver had no LP tokens before this transfer
+            // This prevents griefing (unconditional reset) while also preventing
+            // lock bypass (stale timestamp from a prior fully-withdrawn position)
+            if (balanceOf(to) == value) {
+                depositTimestamp[to] = block.timestamp;
+            }
+        }
     }
 
     // ============ View Functions ============
