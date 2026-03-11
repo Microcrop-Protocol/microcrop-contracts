@@ -356,7 +356,10 @@ contract PayoutReceiver is
             revert InvalidWeightedDamage(calculatedDamage, report.damagePercentage);
         }
 
-        // 13. Validate report is recent (within 1 hour)
+        // 13. Validate report is recent (within 1 hour) and not from the future
+        if (report.assessedAt > block.timestamp) {
+            revert ReportTooOld(report.assessedAt, block.timestamp, MAX_REPORT_AGE);
+        }
         if (block.timestamp > report.assessedAt + MAX_REPORT_AGE) {
             revert ReportTooOld(report.assessedAt, block.timestamp, MAX_REPORT_AGE);
         }
