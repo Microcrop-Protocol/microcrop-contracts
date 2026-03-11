@@ -79,7 +79,7 @@ contract TreasuryTest is Test {
         uint256 expectedNet = PREMIUM_AMOUNT - expectedFee;
 
         vm.prank(backendRole);
-        treasury.receivePremium(policyId, PREMIUM_AMOUNT, farmer);
+        treasury.receivePremium(policyId, PREMIUM_AMOUNT);
 
         assertTrue(treasury.premiumReceived(policyId));
         assertEq(treasury.totalPremiums(), expectedNet);
@@ -89,16 +89,16 @@ contract TreasuryTest is Test {
     function test_ReceivePremium_RevertOnZeroAmount() public {
         vm.prank(backendRole);
         vm.expectRevert(Treasury.ZeroAmount.selector);
-        treasury.receivePremium(1, 0, farmer);
+        treasury.receivePremium(1, 0);
     }
 
     function test_ReceivePremium_RevertOnDuplicate() public {
         vm.prank(backendRole);
-        treasury.receivePremium(1, PREMIUM_AMOUNT, farmer);
+        treasury.receivePremium(1, PREMIUM_AMOUNT);
 
         vm.prank(backendRole);
         vm.expectRevert(abi.encodeWithSelector(Treasury.PremiumAlreadyReceived.selector, 1));
-        treasury.receivePremium(1, PREMIUM_AMOUNT, farmer);
+        treasury.receivePremium(1, PREMIUM_AMOUNT);
     }
 
     function test_RequestPayout() public {
@@ -142,7 +142,7 @@ contract TreasuryTest is Test {
 
     function test_WithdrawFees() public {
         vm.prank(backendRole);
-        treasury.receivePremium(1, PREMIUM_AMOUNT, farmer);
+        treasury.receivePremium(1, PREMIUM_AMOUNT);
 
         uint256 fees = treasury.accumulatedFees();
         uint256 adminBalBefore = usdc.balanceOf(admin);
