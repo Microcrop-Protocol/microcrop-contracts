@@ -76,6 +76,9 @@ contract Treasury is
     /// @notice Backend wallet that receives payouts for M-Pesa conversion
     address public backendWallet;
 
+    /// @notice Emitted when backend wallet is updated
+    event BackendWalletUpdated(address indexed oldWallet, address indexed newWallet);
+
     /// @notice Lifetime total premiums collected (net of platform fees)
     uint256 public totalPremiums;
 
@@ -224,27 +227,24 @@ contract Treasury is
 
     /**
      * @notice Receives premium payment for a policy
-     * @dev Transfers USDC from the sender, deducts platform fee, and adds to pool.
-     *      Only callable by addresses with BACKEND_ROLE.
+     * @dev Transfers USDC from the caller (msg.sender), deducts platform fee, and adds to pool.
+     *      Only callable by addresses with BACKEND_ROLE. The caller must hold and approve the USDC.
      *
      * Process:
      * 1. Validate inputs and prevent double payment
      * 2. Calculate platform fee and net premium
-     * 3. Transfer USDC from sender
+     * 3. Transfer USDC from caller
      * 4. Update state (fees, premiums, tracking)
      *
      * @param policyId The unique identifier of the policy
      * @param amount The gross premium amount in USDC (6 decimals)
-     * @param from The address paying the premium
      */
     function receivePremium(
         uint256 policyId,
-        uint256 amount,
-        address from
+        uint256 amount
     ) external onlyRole(BACKEND_ROLE) nonReentrant whenNotPaused {
         // Validate inputs
         if (amount == 0) revert ZeroAmount();
-        if (from == address(0)) revert ZeroAddress();
         if (premiumReceived[policyId]) revert PremiumAlreadyReceived(policyId);
 
         // Calculate fees
@@ -256,10 +256,10 @@ contract Treasury is
         accumulatedFees += platformFee;
         totalPremiums += netPremium;
 
-        // Transfer USDC from sender
-        usdc.safeTransferFrom(from, address(this), amount);
+        // Transfer USDC from caller
+        usdc.safeTransferFrom(msg.sender, address(this), amount);
 
-        emit PremiumReceived(policyId, amount, platformFee, netPremium, from);
+        emit PremiumReceived(policyId, amount, platformFee, netPremium, msg.sender);
     }
 
     /**
@@ -299,6 +299,12 @@ contract Treasury is
 
         // Update state BEFORE external call (CEI pattern)
         payoutProcessed[policyId] = true;
+        // Reduce totalPremiums so reserve requirement doesn't grow unboundedly
+        if (amount <= totalPremiums) {
+            totalPremiums -= amount;
+        } else {
+            totalPremiums = 0;
+        }
         totalPayouts += amount;
 
         // Transfer USDC to backend wallet
@@ -333,11 +339,35 @@ contract Treasury is
         if (accumulatedFees == 0) revert NoFeesToWithdraw();
 
         uint256 fees = accumulatedFees;
+
+        // Ensure fee withdrawal doesn't violate reserve requirement
+        uint256 balance = usdc.balanceOf(address(this));
+        uint256 requiredReserve = (totalPremiums * MIN_RESERVE_PERCENT) / BASIS_POINTS;
+        if (balance < fees + requiredReserve) {
+            revert InsufficientReserves(
+                balance > requiredReserve ? balance - requiredReserve : 0,
+                fees,
+                requiredReserve
+            );
+        }
+
         accumulatedFees = 0;
 
         usdc.safeTransfer(recipient, fees);
 
         emit FeesWithdrawn(recipient, fees);
+    }
+
+    /**
+     * @notice Updates the backend wallet address
+     * @dev Only callable by addresses with ADMIN_ROLE
+     * @param newBackendWallet The new backend wallet address
+     */
+    function setBackendWallet(address newBackendWallet) external onlyRole(ADMIN_ROLE) {
+        if (newBackendWallet == address(0)) revert ZeroAddress();
+        address oldWallet = backendWallet;
+        backendWallet = newBackendWallet;
+        emit BackendWalletUpdated(oldWallet, newBackendWallet);
     }
 
     /**
