@@ -49,10 +49,10 @@ contract PayoutReceiverTest is BaseTest {
             VALID_DURATION,
             PolicyManager.CoverageType.BOTH
         );
-        policyManager.activatePolicy(policyId, distributor, DISTRIBUTOR_NAME, REGION);
+        policyManager.activatePolicy(policyId, distributor, DISTRIBUTOR_NAME, REGION, address(riskPool));
         
         // Fund treasury
-        treasury.receivePremium(policyId, 100_000e6, backend);
+        treasury.receivePremium(policyId, 100_000e6);
         vm.stopPrank();
 
         return policyId;
