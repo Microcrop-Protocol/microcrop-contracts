@@ -174,8 +174,11 @@ contract RiskPool is
     /// @notice Timestamp of last deposit per investor (for lock-up enforcement)
     mapping(address => uint256) public depositTimestamp;
 
+    /// @notice Internal tracking of deposited capital (immune to direct USDC transfers)
+    uint256 public depositedCapital;
+
     /// @notice Storage gap for future upgrades
-    uint256[39] private __gap;
+    uint256[38] private __gap;
 
     // ============ Events ============
 
@@ -361,9 +364,8 @@ contract RiskPool is
             revert ExceedsMaximumDeposit();
         }
 
-        // Check pool capacity
-        uint256 currentValue = getPoolValue();
-        if (currentValue + usdcAmount > maxCapital) revert ExceedsPoolCapacity();
+        // Check pool capacity using internal accounting (immune to direct USDC transfers)
+        if (depositedCapital + usdcAmount > maxCapital) revert ExceedsPoolCapacity();
 
         // For PRIVATE and MUTUAL pools, require DEPOSITOR_ROLE
         if (poolType != PoolType.PUBLIC) {
@@ -392,6 +394,7 @@ contract RiskPool is
 
         // Update tracking
         totalDeposited[msg.sender] += usdcAmount;
+        depositedCapital += usdcAmount;
         depositTimestamp[msg.sender] = block.timestamp;
 
         // Mint LP tokens
@@ -405,7 +408,7 @@ contract RiskPool is
      * @param tokenAmount Amount of LP tokens to burn
      * @param minUsdcOut Minimum USDC to receive (slippage protection, 0 to skip)
      */
-    function withdraw(uint256 tokenAmount, uint256 minUsdcOut) external nonReentrant {
+    function withdraw(uint256 tokenAmount, uint256 minUsdcOut) external nonReentrant whenNotPaused {
         if (!withdrawalsOpen) revert WithdrawalsNotOpen();
         if (tokenAmount == 0) revert ZeroAmount();
         if (balanceOf(msg.sender) < tokenAmount) revert InsufficientTokens();
@@ -419,6 +422,9 @@ contract RiskPool is
         // Calculate USDC to return at current NAV
         uint256 tokenPrice = getTokenPrice();
         uint256 usdcAmount = (tokenAmount * tokenPrice) / PRECISION;
+
+        // Prevent burning tokens for zero USDC (dust amounts)
+        if (usdcAmount == 0) revert ZeroAmount();
 
         // Slippage protection
         if (minUsdcOut > 0 && usdcAmount < minUsdcOut) {
@@ -437,6 +443,11 @@ contract RiskPool is
             totalDeposited[msg.sender] = 0;
         } else {
             totalDeposited[msg.sender] -= usdcAmount;
+        }
+        if (usdcAmount >= depositedCapital) {
+            depositedCapital = 0;
+        } else {
+            depositedCapital -= usdcAmount;
         }
 
         // Transfer USDC to LP
@@ -471,9 +482,7 @@ contract RiskPool is
 
         // Distribute builder share (pull-safe: fallback to LP on transfer failure)
         if (productBuilder != address(0) && builderShare > 0) {
-            try IERC20(address(usdc)).transfer(productBuilder, builderShare) returns (bool success) {
-                if (!success) lpShare += builderShare;
-            } catch {
+            if (!_safeTransferUSDC(productBuilder, builderShare)) {
                 lpShare += builderShare;
             }
         } else {
@@ -482,9 +491,7 @@ contract RiskPool is
 
         // Distribute protocol share
         if (protocolShare > 0) {
-            try IERC20(address(usdc)).transfer(protocolTreasury, protocolShare) returns (bool success) {
-                if (!success) lpShare += protocolShare;
-            } catch {
+            if (!_safeTransferUSDC(protocolTreasury, protocolShare)) {
                 lpShare += protocolShare;
             }
         }
@@ -492,9 +499,7 @@ contract RiskPool is
         // Distribute distributor share
         address actualDistributor = distributor != address(0) ? distributor : defaultDistributor;
         if (actualDistributor != address(0) && distributorShare > 0) {
-            try IERC20(address(usdc)).transfer(actualDistributor, distributorShare) returns (bool success) {
-                if (!success) lpShare += distributorShare;
-            } catch {
+            if (!_safeTransferUSDC(actualDistributor, distributorShare)) {
                 lpShare += distributorShare;
             }
         } else {
@@ -521,7 +526,7 @@ contract RiskPool is
     function processPayout(
         uint256 policyId,
         uint256 payoutAmount
-    ) external onlyRole(TREASURY_ROLE) nonReentrant {
+    ) external onlyRole(TREASURY_ROLE) nonReentrant whenNotPaused {
         if (payoutAmount == 0) revert ZeroAmount();
         if (usdc.balanceOf(address(this)) < payoutAmount) {
             revert InsufficientBalance();
@@ -670,6 +675,22 @@ contract RiskPool is
         _unpause();
     }
 
+    // ============ Internal Helpers ============
+
+    /**
+     * @notice Safely transfer USDC, returning false on failure instead of reverting
+     * @dev Uses low-level call to handle both reverting and false-returning tokens
+     * @param to Recipient address
+     * @param amount Amount to transfer
+     * @return success Whether the transfer succeeded
+     */
+    function _safeTransferUSDC(address to, uint256 amount) internal returns (bool success) {
+        (bool ok, bytes memory returnData) = address(usdc).call(
+            abi.encodeWithSelector(IERC20.transfer.selector, to, amount)
+        );
+        return ok && (returnData.length == 0 || abi.decode(returnData, (bool)));
+    }
+
     // ============ Internal Overrides ============
 
     /**
@@ -699,15 +720,15 @@ contract RiskPool is
                 }
                 totalDeposited[from] -= depositedMoved;
                 totalDeposited[to] += depositedMoved;
-                if (totalDeposited[to] > maxDeposit) revert ExceedsMaximumDeposit();
+                // Silently cap to prevent griefing via unsolicited LP token transfers
+                if (totalDeposited[to] > maxDeposit) {
+                    totalDeposited[to] = maxDeposit;
+                }
             }
 
-            // Only reset lock period if receiver had no LP tokens before this transfer
-            // This prevents griefing (unconditional reset) while also preventing
-            // lock bypass (stale timestamp from a prior fully-withdrawn position)
-            if (balanceOf(to) == value) {
-                depositTimestamp[to] = block.timestamp;
-            }
+            // Do NOT propagate sender's lock timestamp to receiver.
+            // Each investor's lock is governed only by their own deposits,
+            // preventing griefing via unsolicited LP token transfers.
         }
     }
 
