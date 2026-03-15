@@ -9,6 +9,11 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
+/// @notice Minimal interface for RiskPool premium distribution
+interface IRiskPoolPremium {
+    function collectPremium(uint256 policyId, uint256 grossPremium, address distributor) external;
+}
+
 /**
  * @title Treasury
  * @notice Holds USDC reserves, collects premiums, and disburses payouts for the MicroCrop insurance platform
@@ -82,6 +87,9 @@ contract Treasury is
     /// @notice Lifetime total premiums collected (net of platform fees)
     uint256 public totalPremiums;
 
+    /// @notice High-water mark of net premiums for reserve calculation (never decremented)
+    uint256 public peakPremiums;
+
     /// @notice Lifetime total payouts disbursed
     uint256 public totalPayouts;
 
@@ -97,8 +105,8 @@ contract Treasury is
     /// @notice Mapping to track if payout has been processed for a policy
     mapping(uint256 => bool) public payoutProcessed;
 
-    /// @dev Reserved storage gap for future upgrades (50 slots)
-    uint256[50] private __gap;
+    /// @dev Reserved storage gap for future upgrades (49 slots — reduced by 1 for peakPremiums)
+    uint256[49] private __gap;
 
     // ============ Events ============
 
@@ -255,6 +263,7 @@ contract Treasury is
         premiumReceived[policyId] = true;
         accumulatedFees += platformFee;
         totalPremiums += netPremium;
+        peakPremiums += netPremium;
 
         // Transfer USDC from caller
         usdc.safeTransferFrom(msg.sender, address(this), amount);
@@ -284,9 +293,10 @@ contract Treasury is
         if (amount == 0) revert ZeroAmount();
         if (payoutProcessed[policyId]) revert PayoutAlreadyProcessed(policyId);
 
-        // Calculate reserve requirement
+        // Calculate reserve requirement based on outstanding premiums (premiums minus payouts)
         uint256 currentBalance = usdc.balanceOf(address(this));
-        uint256 requiredReserve = (totalPremiums * MIN_RESERVE_PERCENT) / BASIS_POINTS;
+        uint256 outstandingPremiums = totalPremiums > totalPayouts ? totalPremiums - totalPayouts : 0;
+        uint256 requiredReserve = (outstandingPremiums * MIN_RESERVE_PERCENT) / BASIS_POINTS;
 
         // Check if payout would violate reserve requirement
         if (currentBalance < amount + requiredReserve) {
@@ -299,12 +309,6 @@ contract Treasury is
 
         // Update state BEFORE external call (CEI pattern)
         payoutProcessed[policyId] = true;
-        // Reduce totalPremiums so reserve requirement doesn't grow unboundedly
-        if (amount <= totalPremiums) {
-            totalPremiums -= amount;
-        } else {
-            totalPremiums = 0;
-        }
         totalPayouts += amount;
 
         // Transfer USDC to backend wallet
@@ -342,7 +346,8 @@ contract Treasury is
 
         // Ensure fee withdrawal doesn't violate reserve requirement
         uint256 balance = usdc.balanceOf(address(this));
-        uint256 requiredReserve = (totalPremiums * MIN_RESERVE_PERCENT) / BASIS_POINTS;
+        uint256 outstandingPremiums = totalPremiums > totalPayouts ? totalPremiums - totalPayouts : 0;
+        uint256 requiredReserve = (outstandingPremiums * MIN_RESERVE_PERCENT) / BASIS_POINTS;
         if (balance < fees + requiredReserve) {
             revert InsufficientReserves(
                 balance > requiredReserve ? balance - requiredReserve : 0,
@@ -407,6 +412,28 @@ contract Treasury is
         emit EmergencyWithdrawal(recipient, amount);
     }
 
+    /**
+     * @notice Distribute premium to a RiskPool for LP revenue sharing
+     * @dev Approves USDC to the pool and calls collectPremium.
+     *      Only callable by addresses with BACKEND_ROLE.
+     * @param pool Address of the RiskPool to distribute to
+     * @param policyId The policy identifier
+     * @param grossPremium The gross premium amount to distribute
+     * @param distributor The distributor address for revenue share
+     */
+    function distributePremiumToPool(
+        address pool,
+        uint256 policyId,
+        uint256 grossPremium,
+        address distributor
+    ) external onlyRole(BACKEND_ROLE) nonReentrant whenNotPaused {
+        if (pool == address(0)) revert ZeroAddress();
+        if (grossPremium == 0) revert ZeroAmount();
+
+        usdc.approve(pool, grossPremium);
+        IRiskPoolPremium(pool).collectPremium(policyId, grossPremium, distributor);
+    }
+
     // ============ View Functions ============
 
     /**
@@ -432,8 +459,9 @@ contract Treasury is
      */
     function getAvailableForPayouts() public view returns (uint256 available) {
         uint256 balance = usdc.balanceOf(address(this));
-        uint256 requiredReserve = (totalPremiums * MIN_RESERVE_PERCENT) / BASIS_POINTS;
-        
+        uint256 outstandingPremiums = totalPremiums > totalPayouts ? totalPremiums - totalPayouts : 0;
+        uint256 requiredReserve = (outstandingPremiums * MIN_RESERVE_PERCENT) / BASIS_POINTS;
+
         if (balance <= requiredReserve) {
             return 0;
         }
@@ -446,7 +474,8 @@ contract Treasury is
      */
     function meetsReserveRequirements() public view returns (bool meetsReserve) {
         uint256 balance = usdc.balanceOf(address(this));
-        uint256 requiredReserve = (totalPremiums * MIN_RESERVE_PERCENT) / BASIS_POINTS;
+        uint256 outstandingPremiums = totalPremiums > totalPayouts ? totalPremiums - totalPayouts : 0;
+        uint256 requiredReserve = (outstandingPremiums * MIN_RESERVE_PERCENT) / BASIS_POINTS;
         return balance >= requiredReserve;
     }
 
@@ -455,7 +484,8 @@ contract Treasury is
      * @return required The minimum reserve amount required
      */
     function getRequiredReserve() external view returns (uint256 required) {
-        return (totalPremiums * MIN_RESERVE_PERCENT) / BASIS_POINTS;
+        uint256 outstandingPremiums = totalPremiums > totalPayouts ? totalPremiums - totalPayouts : 0;
+        return (outstandingPremiums * MIN_RESERVE_PERCENT) / BASIS_POINTS;
     }
 
     /**
@@ -463,10 +493,11 @@ contract Treasury is
      * @return ratio The current reserve ratio (0-100+)
      */
     function getReserveRatio() external view returns (uint256 ratio) {
-        if (totalPremiums == 0) return 100;
-        
+        uint256 outstandingPremiums = totalPremiums > totalPayouts ? totalPremiums - totalPayouts : 0;
+        if (outstandingPremiums == 0) return 100;
+
         uint256 balance = usdc.balanceOf(address(this));
-        return (balance * BASIS_POINTS) / totalPremiums;
+        return (balance * BASIS_POINTS) / outstandingPremiums;
     }
 
     /**
