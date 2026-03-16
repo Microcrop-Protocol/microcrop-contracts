@@ -14,6 +14,11 @@ interface IRiskPoolPremium {
     function collectPremium(uint256 policyId, uint256 grossPremium, address distributor) external;
 }
 
+/// @notice Minimal interface for RiskPoolFactory pool validation
+interface IRiskPoolFactory {
+    function isValidPool(address poolAddress) external view returns (bool);
+}
+
 /**
  * @title Treasury
  * @notice Holds USDC reserves, collects premiums, and disburses payouts for the MicroCrop insurance platform
@@ -105,8 +110,11 @@ contract Treasury is
     /// @notice Mapping to track if payout has been processed for a policy
     mapping(uint256 => bool) public payoutProcessed;
 
-    /// @dev Reserved storage gap for future upgrades (49 slots — reduced by 1 for peakPremiums)
-    uint256[49] private __gap;
+    /// @notice RiskPoolFactory address for pool validation
+    address public factory;
+
+    /// @dev Reserved storage gap for future upgrades (48 slots — reduced by 1 for factory)
+    uint256[48] private __gap;
 
     // ============ Events ============
 
@@ -184,6 +192,9 @@ contract Treasury is
 
     /// @notice Thrown when there are no fees to withdraw
     error NoFeesToWithdraw();
+
+    /// @notice Thrown when pool address is not a valid factory-registered pool
+    error InvalidPool(address pool);
 
     // ============ Constructor ============
 
@@ -429,9 +440,25 @@ contract Treasury is
     ) external onlyRole(BACKEND_ROLE) nonReentrant whenNotPaused {
         if (pool == address(0)) revert ZeroAddress();
         if (grossPremium == 0) revert ZeroAmount();
+        if (factory == address(0) || !IRiskPoolFactory(factory).isValidPool(pool)) {
+            revert InvalidPool(pool);
+        }
 
-        usdc.approve(pool, grossPremium);
+        // Adjust accounting — funds leaving Treasury reduce outstanding obligations
+        totalPremiums -= grossPremium;
+
+        usdc.forceApprove(pool, grossPremium);
         IRiskPoolPremium(pool).collectPremium(policyId, grossPremium, distributor);
+        usdc.forceApprove(pool, 0);
+    }
+
+    /**
+     * @notice Sets the RiskPoolFactory address for pool validation
+     * @param _factory Address of the RiskPoolFactory contract
+     */
+    function setFactory(address _factory) external onlyRole(ADMIN_ROLE) {
+        if (_factory == address(0)) revert ZeroAddress();
+        factory = _factory;
     }
 
     // ============ View Functions ============
