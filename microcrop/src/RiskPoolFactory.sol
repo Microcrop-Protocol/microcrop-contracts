@@ -535,17 +535,23 @@ contract RiskPoolFactory is
     function setPolicyManager(address _policyManager) external onlyRole(ADMIN_ROLE) {
         if (_policyManager == address(0)) revert ZeroAddress();
         policyManager = _policyManager;
-
-        // Grant POLICY_MANAGER_ROLE on all existing pools
-        bytes32 pmRole = keccak256("POLICY_MANAGER_ROLE");
-        for (uint256 i = 0; i < allPools.length; i++) {
-            RiskPool pool = RiskPool(allPools[i]);
-            if (!pool.hasRole(pmRole, _policyManager)) {
-                pool.grantRole(pmRole, _policyManager);
-            }
-        }
-
         emit PolicyManagerUpdated(_policyManager);
+    }
+
+    /**
+     * @notice Grant POLICY_MANAGER_ROLE to the current policyManager on a specific pool
+     * @dev Call this per-pool after setPolicyManager to avoid unbounded gas loops
+     * @param pool Address of the pool to grant the role on
+     */
+    function grantPolicyManagerToPool(address pool) external onlyRole(ADMIN_ROLE) {
+        if (policyManager == address(0)) revert ZeroAddress();
+        if (!isPool[pool]) revert PoolNotFound();
+
+        bytes32 pmRole = keccak256("POLICY_MANAGER_ROLE");
+        RiskPool riskPool = RiskPool(pool);
+        if (!riskPool.hasRole(pmRole, policyManager)) {
+            riskPool.grantRole(pmRole, policyManager);
+        }
     }
 
     /**
