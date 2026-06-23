@@ -1,0 +1,53 @@
+{
+  "domain": {
+    "schemaVersion": "1.0",
+    "kind": "CROP_DAMAGE",
+    "methodologyVersion": "crop-dualindex-1.0",
+    "chainId": 8453,
+    "verifyingContract": "0x522b5Ff31E21CD71C76fedE44297D99e40D820cf"
+  },
+  "fieldValues": {
+    "onChainPolicyId": "1234",
+    "latitude_e6": "-1286389",
+    "longitude_e6": "36817223",
+    "sumInsured": "1000000000",
+    "ndviScaled": "3100",
+    "weatherPresent": 1,
+    "weatherTempC_e2": "-350",
+    "weatherPrecip_e2": "0",
+    "weatherHumidity": "55",
+    "weatherWind_e2": "1200",
+    "weatherDamage_pct": 40,
+    "satelliteDamage_pct": 60,
+    "damagePercent_bp": 4800,
+    "payoutAmount": "480000000",
+    "assessedAt": "1718900000"
+  },
+  "inputsEncoded_len_bytes": 320,
+  "inputsHash": "0x00c9518d24a624358f4d8fb8b02334662ffe0c055e2ad47f41a98c27b253ffe2",
+  "preimageHash": "0x6327a4a82c9df61cdd4c391a1250d50c1500d290ec195609654e576ccacb2947",
+  "signature": {
+    "r": "0xa93ac9f2a86cbce420f1ce0cac73d45daa6d3ec348f7ae287212571ad49b03e7",
+    "s": "0x0d3eef9a593cb12373fccc34c292e93b09fed42a9555a2f949678fd5de4c7766",
+    "v": 27,
+    "yParity": 0,
+    "serialized": "0xa93ac9f2a86cbce420f1ce0cac73d45daa6d3ec348f7ae287212571ad49b03e70d3eef9a593cb12373fccc34c292e93b09fed42a9555a2f949678fd5de4c77661b"
+  },
+  "testPkpPrivKey": "0x7a29476861c041c469b048c1e2aa84bc24c79211ec5c5062375955c07ef26a34",
+  "authorizedSigner": "0xF18685788a4261DDA4f036D236066533a91C5ABE",
+  "recovered": "0xF18685788a4261DDA4f036D236066533a91C5ABE",
+  "collision": {
+    "satelliteOnly": "0xab413f9c9699412314d7c2624eed9a445dfa38cf662511704cda4ce8827510ec",
+    "zeroReadings": "0x16c241cb020ee06b707102e39151ed2210cadca05d6fb37d59cebb644eb82152"
+  },
+  "checks": {
+    "bounds: damageBp <= 10000": true,
+    "bounds: weather/sat <= 100": true,
+    "weighted: 60w+40s == damageBp": true,
+    "threshold: damageBp >= 3000": true,
+    "payout: sumInsured*damageBp/10000": true,
+    "signer: recovered == authorized": true,
+    "collision: satOnly != zeroReadings": true
+  },
+  "allPassed": true
+}

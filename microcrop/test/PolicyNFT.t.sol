@@ -249,6 +249,20 @@ contract PolicyNFTTest is Test {
         nft.tokenURI(999);
     }
 
+    /// @notice Finding 6: a distributor/region name with ampersands (and an entity-injection
+    ///         attempt) must not break tokenURI. The `&` -> `&amp;` escaping expands the buffer;
+    ///         a miscount would revert on out-of-bounds byte writes, so a clean URI proves the
+    ///         variable-length buffer math is correct.
+    function test_TokenURI_AmpersandNameIsSafe() public {
+        vm.prank(minter);
+        nft.mintPolicy(farmer1, 1, distributor1, "Farmers & Co & <script>&#x3C;", 100_000e6, 5_000e6,
+            block.timestamp, block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT, "A & B", 12345);
+
+        string memory uri = nft.tokenURI(1);
+        assertTrue(bytes(uri).length > 29, "tokenURI empty/short: buffer math broke on ampersand");
+    }
+
     // ============ Enumerable Tests ============
 
     function test_Enumerable_TokenOfOwnerByIndex() public {

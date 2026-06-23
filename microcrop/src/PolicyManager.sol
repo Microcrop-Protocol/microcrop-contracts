@@ -166,8 +166,14 @@ contract PolicyManager is
     /// @notice RiskPoolFactory contract for pool validation
     IRiskPoolFactory public riskPoolFactory;
 
-    /// @dev Reserved storage gap for future upgrades (47 slots - reduced by 3 for policyNFT, _policyPools, riskPoolFactory)
-    uint256[47] private __gap;
+    /// @notice Mapping from farmer address to count of PENDING (created, not yet activated) policies.
+    /// @dev Appended in this upgrade (consumes the first former __gap slot). Together with
+    ///      _farmerActiveCounts it caps total OPEN policies per farmer at creation time, bounding
+    ///      _farmerPolicies array growth (previously only ACTIVE was capped).
+    mapping(address => uint256) private _farmerPendingCounts;
+
+    /// @dev Reserved storage gap for future upgrades (was 47; reduced by 1 for _farmerPendingCounts).
+    uint256[46] private __gap;
 
     // ============ Events ============
 
@@ -398,12 +404,13 @@ contract PolicyManager is
             revert InvalidDuration(durationDays, MIN_DURATION_DAYS, MAX_DURATION_DAYS);
         }
 
-        // Check farmer's active policy count
-        uint256 currentActivePolicies = _farmerActiveCounts[farmer];
-        if (currentActivePolicies >= MAX_ACTIVE_POLICIES_PER_FARMER) {
+        // Cap TOTAL open policies (ACTIVE + PENDING) at creation time, so unactivated PENDING
+        // policies cannot accumulate without bound (Finding 5).
+        uint256 currentOpenPolicies = _farmerActiveCounts[farmer] + _farmerPendingCounts[farmer];
+        if (currentOpenPolicies >= MAX_ACTIVE_POLICIES_PER_FARMER) {
             revert TooManyActivePolicies(
                 farmer,
-                currentActivePolicies,
+                currentOpenPolicies,
                 MAX_ACTIVE_POLICIES_PER_FARMER
             );
         }
@@ -431,6 +438,9 @@ contract PolicyManager is
 
         // Update farmer's policy tracking
         _farmerPolicies[farmer].push(policyId);
+        unchecked {
+            ++_farmerPendingCounts[farmer];
+        }
 
         // Emit event
         emit PolicyCreated(
@@ -527,9 +537,15 @@ contract PolicyManager is
         // Store the backing pool for this policy
         _policyPools[policyId] = poolAddress;
 
-        // Increment farmer's active policy count
+        // Move the farmer's slot from PENDING to ACTIVE (guard the decrement against any
+        // pre-upgrade PENDING policy that was never counted).
         unchecked {
             ++_farmerActiveCounts[policy.farmer];
+        }
+        if (_farmerPendingCounts[policy.farmer] > 0) {
+            unchecked {
+                --_farmerPendingCounts[policy.farmer];
+            }
         }
 
         // Update pool exposure
@@ -683,6 +699,13 @@ contract PolicyManager is
             // Update NFT status to inactive (allows transfer)
             if (address(policyNFT) != address(0)) {
                 policyNFT.updatePolicyStatus(policyId, false);
+            }
+        } else {
+            // PENDING policy: release its reserved open-policy slot (Finding 5).
+            if (_farmerPendingCounts[policy.farmer] > 0) {
+                unchecked {
+                    --_farmerPendingCounts[policy.farmer];
+                }
             }
         }
 

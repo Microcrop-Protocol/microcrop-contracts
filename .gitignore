@@ -1,0 +1,10 @@
+# OS / editor cruft
+.DS_Store
+**/.DS_Store
+.vscode/
+
+# Tooling state
+**/.claude/
+
+# Foundry deploy artifacts (generated; regenerable from chain)
+microcrop/broadcast/

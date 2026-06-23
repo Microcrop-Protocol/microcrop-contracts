@@ -1,0 +1,54 @@
+{
+  "domain": {
+    "schemaVersion": "1.0",
+    "kind": "CROP_DAMAGE",
+    "methodologyVersion": "crop-dualindex-1.0",
+    "chainId": 8453,
+    "verifyingContract": "0x522b5Ff31E21CD71C76fedE44297D99e40D820cf"
+  },
+  "fieldValues": {
+    "onChainPolicyId": "1234",
+    "latitude_e6": "-1286389",
+    "longitude_e6": "36817223",
+    "sumInsured": "1000000000",
+    "ndviScaled": "3500",
+    "weatherPresent": 0,
+    "weatherTempC_e2": "0",
+    "weatherPrecip_e2": "0",
+    "weatherHumidity": "0",
+    "weatherWind_e2": "0",
+    "weatherDamage_pct": 0,
+    "satelliteDamage_pct": 45,
+    "damagePercent_bp": 4500,
+    "payoutAmount": "450000000",
+    "assessedAt": "1718900000"
+  },
+  "regression": {
+    "oldFormulaBp": 1800,
+    "renormBp": 4500,
+    "thresholdBp": 3000
+  },
+  "inputsHash": "0x94b89f2f4c39c24355b52c7a8e9e9287cfffb813e3d7fbca468a36ebcca97535",
+  "preimageHash": "0x8a67a201014c8131d8a18f79764bc386ed3b1966321a6b52f68f7a6ceeabe1c1",
+  "signature": {
+    "r": "0x396b1cdf2aba11f3f61b0854a118ef6d39bfe1aa94ccdd9fa7779810c384a8c2",
+    "s": "0x4bafb1bf7a3d8233e5910ba3677a6685fbeadc7d2888e9ba0632a49fa1a48b90",
+    "v": 28,
+    "yParity": 1,
+    "serialized": "0x396b1cdf2aba11f3f61b0854a118ef6d39bfe1aa94ccdd9fa7779810c384a8c24bafb1bf7a3d8233e5910ba3677a6685fbeadc7d2888e9ba0632a49fa1a48b901c"
+  },
+  "testPkpPrivKey": "0x7a29476861c041c469b048c1e2aa84bc24c79211ec5c5062375955c07ef26a34",
+  "authorizedSigner": "0xF18685788a4261DDA4f036D236066533a91C5ABE",
+  "recovered": "0xF18685788a4261DDA4f036D236066533a91C5ABE",
+  "checks": {
+    "weatherPresent == 0": true,
+    "weatherDamage == 0 (bound)": true,
+    "renorm: damageBp == satellite*100": true,
+    "renorm PAYS: damageBp >= 3000": true,
+    "REGRESSION: old 60/40 would NOT pay": true,
+    "REGRESSION: renorm != old formula": true,
+    "payout: sumInsured*damageBp/10000": true,
+    "signer: recovered == authorized": true
+  },
+  "allPassed": true
+}

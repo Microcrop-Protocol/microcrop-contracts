@@ -54,6 +54,39 @@ contract PolicyManagerTest is BaseTest {
         return policyId;
     }
 
+    // ============ Finding 5: PENDING policies counted toward the open-policy cap ============
+
+    /// @notice Unactivated PENDING policies must count toward MAX_ACTIVE_POLICIES_PER_FARMER so
+    ///         they cannot accumulate without bound (Finding 5).
+    function test_CreatePolicy_PendingPoliciesCappedAtMax() public {
+        uint256 max = policyManager.MAX_ACTIVE_POLICIES_PER_FARMER();
+        for (uint256 i = 0; i < max; i++) {
+            _createValidPolicy(farmer); // all PENDING, never activated
+        }
+        // The (max+1)-th creation must revert even though zero policies are ACTIVE.
+        vm.prank(backend);
+        vm.expectRevert(abi.encodeWithSelector(PolicyManager.TooManyActivePolicies.selector, farmer, max, max));
+        policyManager.createPolicy(farmer, VALID_PLOT_ID, VALID_SUM_INSURED, VALID_PREMIUM, VALID_DURATION, PolicyManager.CoverageType.BOTH);
+    }
+
+    /// @notice Cancelling a PENDING policy frees its open-policy slot.
+    function test_CreatePolicy_CancellingPendingFreesSlot() public {
+        uint256 max = policyManager.MAX_ACTIVE_POLICIES_PER_FARMER();
+        uint256 first = _createValidPolicy(farmer);
+        for (uint256 i = 1; i < max; i++) {
+            _createValidPolicy(farmer);
+        }
+        // At cap (all PENDING) — next create reverts.
+        vm.prank(backend);
+        vm.expectRevert(abi.encodeWithSelector(PolicyManager.TooManyActivePolicies.selector, farmer, max, max));
+        policyManager.createPolicy(farmer, VALID_PLOT_ID, VALID_SUM_INSURED, VALID_PREMIUM, VALID_DURATION, PolicyManager.CoverageType.BOTH);
+
+        // Cancel one PENDING policy → a slot frees up → create succeeds.
+        vm.prank(backend);
+        policyManager.cancelPolicy(first);
+        _createValidPolicy(farmer); // must not revert
+    }
+
     // ============ Initialization Tests ============
 
     function test_Initialize_GrantsAdminRole() public view {

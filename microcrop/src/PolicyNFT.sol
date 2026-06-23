@@ -301,26 +301,40 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
     }
 
     /**
-     * @notice Sanitize a string for safe SVG and JSON embedding
-     * @dev Strips < > " and \ to prevent SVG injection and JSON breakout
+     * @notice Sanitize a string for safe SVG (XML) and JSON embedding
+     * @dev Strips < > " and \, and escapes & to &amp;. Escaping the ampersand keeps the SVG
+     *      valid XML and neutralizes numeric-entity injection (e.g. &#x3C; becomes inert as the
+     *      leading & is escaped). (Finding 6)
      * @param input The raw input string
      * @return sanitized The sanitized string safe for SVG and JSON
      */
     function _sanitizeSVG(string memory input) internal pure returns (string memory) {
         bytes memory inputBytes = bytes(input);
-        // Count safe bytes (exclude < > " \)
-        uint256 safeCount = 0;
+        // First pass: compute output length. Drop < > " \ ; escape & -> &amp; (5 bytes).
+        uint256 outLen = 0;
         for (uint256 i = 0; i < inputBytes.length; i++) {
             bytes1 b = inputBytes[i];
-            if (b != 0x3C && b != 0x3E && b != 0x22 && b != 0x5C) {
-                safeCount++;
+            if (b == 0x3C || b == 0x3E || b == 0x22 || b == 0x5C) {
+                continue; // stripped
+            } else if (b == 0x26) {
+                outLen += 5; // & -> &amp;
+            } else {
+                outLen += 1;
             }
         }
-        bytes memory result = new bytes(safeCount);
+        bytes memory result = new bytes(outLen);
         uint256 j = 0;
         for (uint256 i = 0; i < inputBytes.length; i++) {
             bytes1 b = inputBytes[i];
-            if (b != 0x3C && b != 0x3E && b != 0x22 && b != 0x5C) {
+            if (b == 0x3C || b == 0x3E || b == 0x22 || b == 0x5C) {
+                continue;
+            } else if (b == 0x26) {
+                result[j++] = 0x26; // &
+                result[j++] = 0x61; // a
+                result[j++] = 0x6D; // m
+                result[j++] = 0x70; // p
+                result[j++] = 0x3B; // ;
+            } else {
                 result[j++] = b;
             }
         }
