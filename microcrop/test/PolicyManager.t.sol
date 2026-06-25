@@ -50,7 +50,7 @@ contract PolicyManagerTest is BaseTest {
     function _createAndActivatePolicy(address _farmer) internal returns (uint256) {
         uint256 policyId = _createValidPolicy(_farmer);
         vm.prank(backend);
-        policyManager.activatePolicy(policyId, distributor, DISTRIBUTOR_NAME, REGION, address(riskPool));
+        policyManager.activatePolicy(policyId, distributor, DISTRIBUTOR_NAME, REGION);
         return policyId;
     }
 
@@ -150,7 +150,7 @@ contract PolicyManagerTest is BaseTest {
         uint256 policyId = _createValidPolicy(farmer);
 
         vm.prank(backend);
-        policyManager.activatePolicy(policyId, distributor, DISTRIBUTOR_NAME, REGION, address(riskPool));
+        policyManager.activatePolicy(policyId, distributor, DISTRIBUTOR_NAME, REGION);
 
         PolicyManager.Policy memory policy = policyManager.getPolicy(policyId);
         assertEq(uint8(policy.status), uint8(PolicyManager.PolicyStatus.ACTIVE));
@@ -162,7 +162,7 @@ contract PolicyManagerTest is BaseTest {
         assertEq(policyNFT.balanceOf(farmer), 0);
 
         vm.prank(backend);
-        policyManager.activatePolicy(policyId, distributor, DISTRIBUTOR_NAME, REGION, address(riskPool));
+        policyManager.activatePolicy(policyId, distributor, DISTRIBUTOR_NAME, REGION);
 
         assertEq(policyNFT.balanceOf(farmer), 1);
         assertEq(policyNFT.ownerOf(policyId), farmer);
@@ -173,13 +173,13 @@ contract PolicyManagerTest is BaseTest {
 
         vm.prank(backend);
         vm.expectRevert(PolicyManager.ZeroAddressDistributor.selector);
-        policyManager.activatePolicy(policyId, address(0), DISTRIBUTOR_NAME, REGION, address(riskPool));
+        policyManager.activatePolicy(policyId, address(0), DISTRIBUTOR_NAME, REGION);
     }
 
     function test_ActivatePolicy_RevertsWhenPolicyNotFound() public {
         vm.prank(backend);
         vm.expectRevert(abi.encodeWithSelector(PolicyManager.PolicyDoesNotExist.selector, 999));
-        policyManager.activatePolicy(999, distributor, DISTRIBUTOR_NAME, REGION, address(riskPool));
+        policyManager.activatePolicy(999, distributor, DISTRIBUTOR_NAME, REGION);
     }
 
     // ============ markAsClaimed Tests ============

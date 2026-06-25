@@ -9,16 +9,6 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-/// @notice Minimal interface for RiskPool premium distribution
-interface IRiskPoolPremium {
-    function collectPremium(uint256 policyId, uint256 grossPremium, address distributor) external;
-}
-
-/// @notice Minimal interface for RiskPoolFactory pool validation
-interface IRiskPoolFactory {
-    function isValidPool(address poolAddress) external view returns (bool);
-}
-
 /**
  * @title Treasury
  * @notice Holds USDC reserves, collects premiums, and disburses payouts for the MicroCrop insurance platform
@@ -110,10 +100,11 @@ contract Treasury is
     /// @notice Mapping to track if payout has been processed for a policy
     mapping(uint256 => bool) public payoutProcessed;
 
-    /// @notice RiskPoolFactory address for pool validation
-    address public factory;
+    /// @dev DEPRECATED (Batch C — RiskPool removal). Slot retained for storage-layout
+    ///      compatibility; no longer read or written. Was `address public factory`.
+    address private __deprecated_factory;
 
-    /// @dev Reserved storage gap for future upgrades (48 slots — reduced by 1 for factory)
+    /// @dev Reserved storage gap for future upgrades (48 slots — reduced by 1 for the deprecated factory slot)
     uint256[48] private __gap;
 
     // ============ Events ============
@@ -192,9 +183,6 @@ contract Treasury is
 
     /// @notice Thrown when there are no fees to withdraw
     error NoFeesToWithdraw();
-
-    /// @notice Thrown when pool address is not a valid factory-registered pool
-    error InvalidPool(address pool);
 
     // ============ Constructor ============
 
@@ -421,44 +409,6 @@ contract Treasury is
         usdc.safeTransfer(recipient, amount);
 
         emit EmergencyWithdrawal(recipient, amount);
-    }
-
-    /**
-     * @notice Distribute premium to a RiskPool for LP revenue sharing
-     * @dev Approves USDC to the pool and calls collectPremium.
-     *      Only callable by addresses with BACKEND_ROLE.
-     * @param pool Address of the RiskPool to distribute to
-     * @param policyId The policy identifier
-     * @param grossPremium The gross premium amount to distribute
-     * @param distributor The distributor address for revenue share
-     */
-    function distributePremiumToPool(
-        address pool,
-        uint256 policyId,
-        uint256 grossPremium,
-        address distributor
-    ) external onlyRole(BACKEND_ROLE) nonReentrant whenNotPaused {
-        if (pool == address(0)) revert ZeroAddress();
-        if (grossPremium == 0) revert ZeroAmount();
-        if (factory == address(0) || !IRiskPoolFactory(factory).isValidPool(pool)) {
-            revert InvalidPool(pool);
-        }
-
-        // Adjust accounting — funds leaving Treasury reduce outstanding obligations
-        totalPremiums -= grossPremium;
-
-        usdc.forceApprove(pool, grossPremium);
-        IRiskPoolPremium(pool).collectPremium(policyId, grossPremium, distributor);
-        usdc.forceApprove(pool, 0);
-    }
-
-    /**
-     * @notice Sets the RiskPoolFactory address for pool validation
-     * @param _factory Address of the RiskPoolFactory contract
-     */
-    function setFactory(address _factory) external onlyRole(ADMIN_ROLE) {
-        if (_factory == address(0)) revert ZeroAddress();
-        factory = _factory;
     }
 
     // ============ View Functions ============
