@@ -10,5 +10,7 @@ out/
 # Docs
 docs/
 
-# Dotenv file
+# Dotenv files (.env, .env.sepolia, .env.local, ...) — never commit secrets
 .env
+.env.*
+!.env.example
