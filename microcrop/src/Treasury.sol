@@ -516,6 +516,6 @@ contract Treasury is
      * @return version The contract version string
      */
     function version() external pure returns (string memory) {
-        return "1.0.0";
+        return "2.0.0"; // Batch C — Treasury narrowing
     }
 }

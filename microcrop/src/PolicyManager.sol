@@ -825,6 +825,6 @@ contract PolicyManager is
      * @return The contract version string
      */
     function version() external pure returns (string memory) {
-        return "1.0.0";
+        return "2.0.0"; // Batch C — RiskPool removal
     }
 }
