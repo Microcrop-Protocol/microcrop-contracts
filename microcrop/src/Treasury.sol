@@ -9,6 +9,12 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
+/// @notice Minimal PolicyManager view interface for per-org reserve accounting (v3).
+interface IPolicyManagerOrg {
+    function policyOrg(uint256 policyId) external view returns (address);
+    function orgOutstandingSumInsured(address org) external view returns (uint256);
+}
+
 /**
  * @title Treasury
  * @notice Holds USDC reserves, collects premiums, and disburses payouts for the MicroCrop insurance platform
@@ -52,6 +58,16 @@ contract Treasury is
 
     /// @notice Basis points denominator (100%)
     uint256 private constant BASIS_POINTS = 100;
+
+    // ── Per-org treasury (v3) — true basis points (denominator 10000) ──
+    /// @notice True basis-points denominator for per-org reserve/fee math.
+    uint256 private constant BPS_DENOMINATOR = 10_000;
+    /// @notice Default per-org reserve ratio when unset: 2000 bps (20%).
+    uint256 public constant DEFAULT_RESERVE_RATIO_BPS = 2_000;
+    /// @notice Ceiling for a per-org reserve ratio: 10000 bps (100%).
+    uint256 public constant MAX_RESERVE_RATIO_BPS = 10_000;
+    /// @notice Ceiling for a per-org platform fee: 3000 bps (30%).
+    uint256 public constant MAX_FEE_BPS = 3_000;
 
     // ============ Role Definitions ============
 
@@ -104,8 +120,23 @@ contract Treasury is
     ///      compatibility; no longer read or written. Was `address public factory`.
     address private __deprecated_factory;
 
-    /// @dev Reserved storage gap for future upgrades (48 slots — reduced by 1 for the deprecated factory slot)
-    uint256[48] private __gap;
+    // ── Per-org treasury (v3) — appended; storage-safe ──
+
+    /// @notice PolicyManager, read to resolve a policy's backing org and that org's exposure.
+    IPolicyManagerOrg public policyManager;
+
+    /// @notice Each org's reserve balance (USDC, 6dp), keyed by the org's wallet address.
+    ///         Premiums credit it; payouts debit it; the org withdraws surplus above reserveRequired.
+    mapping(address => uint256) public orgReserve;
+
+    /// @notice Per-org reserve ratio in true bps. 0 = use DEFAULT_RESERVE_RATIO_BPS. Platform-admin set.
+    mapping(address => uint256) public orgReserveRatioBps;
+
+    /// @notice Per-org platform fee in true bps. 0 = fall back to the global platformFeePercent. Platform-admin set.
+    mapping(address => uint256) public orgFeeBps;
+
+    /// @dev Reserved storage gap (was 48; reduced by 4 for policyManager + 3 org mappings).
+    uint256[44] private __gap;
 
     // ============ Events ============
 
@@ -158,6 +189,22 @@ contract Treasury is
      */
     event EmergencyWithdrawal(address indexed recipient, uint256 amount);
 
+    // ── Per-org treasury (v3) ──
+    /// @notice Emitted when an org's reserve is credited from a premium.
+    event OrgReserveCredited(address indexed org, uint256 indexed policyId, uint256 netAmount);
+    /// @notice Emitted when reserve capital is deposited into an org's reserve.
+    event OrgReserveDeposited(address indexed org, address indexed from, uint256 amount);
+    /// @notice Emitted when an org's reserve is debited for a payout.
+    event OrgReserveDebited(address indexed org, uint256 indexed policyId, uint256 amount);
+    /// @notice Emitted when an org withdraws surplus reserve.
+    event OrgSurplusWithdrawn(address indexed org, address indexed to, uint256 amount);
+    /// @notice Emitted when the platform admin sets an org's reserve ratio.
+    event OrgReserveRatioSet(address indexed org, uint256 ratioBps);
+    /// @notice Emitted when the platform admin sets an org's fee rate.
+    event OrgFeeBpsSet(address indexed org, uint256 feeBps);
+    /// @notice Emitted when the PolicyManager reference is set.
+    event PolicyManagerSet(address indexed policyManager);
+
     // ============ Custom Errors ============
 
     /// @notice Thrown when a zero address is provided
@@ -180,6 +227,21 @@ contract Treasury is
 
     /// @notice Thrown when emergency withdraw amount exceeds balance
     error InsufficientBalance(uint256 requested, uint256 available);
+
+    /// @notice Thrown when an org's reserve cannot cover a payout (LOUD — never a silent skip).
+    error InsufficientOrgReserve(address org, uint256 required, uint256 available);
+
+    /// @notice Thrown when a policy has no resolvable backing org.
+    error OrgNotResolved(uint256 policyId);
+
+    /// @notice Thrown when the PolicyManager reference has not been configured (post-upgrade setup).
+    error PolicyManagerNotSet();
+
+    /// @notice Thrown when a per-org bps parameter exceeds its ceiling.
+    error BpsTooHigh(uint256 provided, uint256 maximum);
+
+    /// @notice Thrown when a withdrawal would breach the org's required reserve.
+    error WouldBreachReserve(address org, uint256 reserveRequired, uint256 remaining);
 
     /// @notice Thrown when there are no fees to withdraw
     error NoFeesToWithdraw();
@@ -254,8 +316,9 @@ contract Treasury is
         if (amount == 0) revert ZeroAmount();
         if (premiumReceived[policyId]) revert PremiumAlreadyReceived(policyId);
 
-        // Calculate fees
-        uint256 platformFee = calculatePlatformFee(amount);
+        // Resolve the backing org and split the per-org platform fee.
+        address org = _resolveOrg(policyId);
+        uint256 platformFee = (amount * _feeBps(org)) / BPS_DENOMINATOR;
         uint256 netPremium = amount - platformFee;
 
         // Mark as received BEFORE external call (CEI pattern)
@@ -263,11 +326,14 @@ contract Treasury is
         accumulatedFees += platformFee;
         totalPremiums += netPremium;
         peakPremiums += netPremium;
+        // Credit the org's own reserve — this is the pool that backs its payouts.
+        orgReserve[org] += netPremium;
 
         // Transfer USDC from caller
         usdc.safeTransferFrom(msg.sender, address(this), amount);
 
         emit PremiumReceived(policyId, amount, platformFee, netPremium, msg.sender);
+        emit OrgReserveCredited(org, policyId, netPremium);
     }
 
     /**
@@ -292,28 +358,113 @@ contract Treasury is
         if (amount == 0) revert ZeroAmount();
         if (payoutProcessed[policyId]) revert PayoutAlreadyProcessed(policyId);
 
-        // Calculate reserve requirement based on outstanding premiums (premiums minus payouts)
-        uint256 currentBalance = usdc.balanceOf(address(this));
-        uint256 outstandingPremiums = totalPremiums > totalPayouts ? totalPremiums - totalPayouts : 0;
-        uint256 requiredReserve = (outstandingPremiums * MIN_RESERVE_PERCENT) / BASIS_POINTS;
-
-        // Check if payout would violate reserve requirement
-        if (currentBalance < amount + requiredReserve) {
-            revert InsufficientReserves(
-                currentBalance > requiredReserve ? currentBalance - requiredReserve : 0,
-                amount,
-                requiredReserve
-            );
+        // Per-org solvency: the payout is funded ONLY by the policy's org's own reserve.
+        // If the org under-reserved, this REVERTS loudly (the farmer is owed money and the
+        // backend must alert the org + platform admin) — never a silent skip.
+        address org = _resolveOrg(policyId);
+        uint256 available = orgReserve[org];
+        if (available < amount) {
+            revert InsufficientOrgReserve(org, amount, available);
         }
 
         // Update state BEFORE external call (CEI pattern)
         payoutProcessed[policyId] = true;
         totalPayouts += amount;
+        orgReserve[org] = available - amount;
 
-        // Transfer USDC to backend wallet
+        // Transfer USDC to backend wallet (for M-Pesa offramp to the farmer)
         usdc.safeTransfer(backendWallet, amount);
 
         emit PayoutSent(policyId, amount, backendWallet);
+        emit OrgReserveDebited(org, policyId, amount);
+    }
+
+    // ============ Per-org treasury (v3) ============
+
+    /// @notice Deposit reserve capital into an org's reserve. This is how an insurer funds the
+    ///         reserve that backs its coverage (premiums alone don't cover potential payouts).
+    ///         Anyone may fund an org (the org itself, or the backend on its behalf); the caller
+    ///         supplies the USDC.
+    /// @param org The org (wallet) whose reserve to credit.
+    /// @param amount USDC (6dp) to deposit.
+    function depositReserve(address org, uint256 amount) external nonReentrant whenNotPaused {
+        if (org == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+        orgReserve[org] += amount;
+        usdc.safeTransferFrom(msg.sender, address(this), amount);
+        emit OrgReserveDeposited(org, msg.sender, amount);
+    }
+
+    /// @notice Withdraw surplus reserve. Callable ONLY by the org's own wallet (msg.sender == org),
+    ///         and only down to the org's required reserve — the contract enforces solvency, so an
+    ///         insurer cannot pull capital out from under outstanding policies. MicroCrop (platform
+    ///         admin) cannot move org money; it only sets the ratio (setOrgReserveRatioBps) + can pause.
+    /// @param amount USDC (6dp) to withdraw.
+    /// @param to Recipient of the surplus.
+    function withdrawOrgSurplus(uint256 amount, address to) external nonReentrant whenNotPaused {
+        if (to == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+        address org = msg.sender; // the org's Privy wallet is the per-org key and the authority
+        uint256 available = orgReserve[org];
+        if (available < amount) revert InsufficientOrgReserve(org, amount, available);
+
+        uint256 remaining = available - amount;
+        uint256 required = reserveRequired(org);
+        if (remaining < required) revert WouldBreachReserve(org, required, remaining);
+
+        orgReserve[org] = remaining;
+        usdc.safeTransfer(to, amount);
+        emit OrgSurplusWithdrawn(org, to, amount);
+    }
+
+    /// @notice The reserve an org must keep: outstanding (ACTIVE, unpaid) sum insured × its ratio.
+    function reserveRequired(address org) public view returns (uint256) {
+        if (address(policyManager) == address(0)) revert PolicyManagerNotSet();
+        uint256 outstanding = policyManager.orgOutstandingSumInsured(org);
+        return (outstanding * _reserveRatioBps(org)) / BPS_DENOMINATOR;
+    }
+
+    /// @notice Sets the PolicyManager reference (post-upgrade wiring). Admin only.
+    function setPolicyManager(address _policyManager) external onlyRole(ADMIN_ROLE) {
+        if (_policyManager == address(0)) revert ZeroAddress();
+        policyManager = IPolicyManagerOrg(_policyManager);
+        emit PolicyManagerSet(_policyManager);
+    }
+
+    /// @notice Sets an org's reserve ratio (true bps). Platform admin only — this is MicroCrop's
+    ///         only lever over org capital (set the solvency rule; never move the money).
+    function setOrgReserveRatioBps(address org, uint256 ratioBps) external onlyRole(ADMIN_ROLE) {
+        if (org == address(0)) revert ZeroAddress();
+        if (ratioBps > MAX_RESERVE_RATIO_BPS) revert BpsTooHigh(ratioBps, MAX_RESERVE_RATIO_BPS);
+        orgReserveRatioBps[org] = ratioBps;
+        emit OrgReserveRatioSet(org, ratioBps);
+    }
+
+    /// @notice Sets an org's platform fee (true bps; negotiable per partner). Platform admin only.
+    function setOrgFeeBps(address org, uint256 feeBps) external onlyRole(ADMIN_ROLE) {
+        if (org == address(0)) revert ZeroAddress();
+        if (feeBps > MAX_FEE_BPS) revert BpsTooHigh(feeBps, MAX_FEE_BPS);
+        orgFeeBps[org] = feeBps;
+        emit OrgFeeBpsSet(org, feeBps);
+    }
+
+    /// @dev Resolve a policy's backing org via PolicyManager; revert if unset/unknown.
+    function _resolveOrg(uint256 policyId) private view returns (address org) {
+        if (address(policyManager) == address(0)) revert PolicyManagerNotSet();
+        org = policyManager.policyOrg(policyId);
+        if (org == address(0)) revert OrgNotResolved(policyId);
+    }
+
+    /// @dev Effective reserve ratio for an org (per-org override, else default).
+    function _reserveRatioBps(address org) private view returns (uint256) {
+        uint256 r = orgReserveRatioBps[org];
+        return r == 0 ? DEFAULT_RESERVE_RATIO_BPS : r;
+    }
+
+    /// @dev Effective fee bps for an org (per-org override, else the global platformFeePercent).
+    function _feeBps(address org) private view returns (uint256) {
+        uint256 f = orgFeeBps[org];
+        return f == 0 ? platformFeePercent * 100 : f; // platformFeePercent is a percent (10 -> 1000 bps)
     }
 
     /**
@@ -341,20 +492,10 @@ contract Treasury is
         if (recipient == address(0)) revert ZeroAddress();
         if (accumulatedFees == 0) revert NoFeesToWithdraw();
 
+        // Fees are platform revenue, accounted separately from per-org reserves (v3): the
+        // invariant balance == sum(orgReserve) + accumulatedFees means withdrawing exactly
+        // accumulatedFees never touches an org's reserve.
         uint256 fees = accumulatedFees;
-
-        // Ensure fee withdrawal doesn't violate reserve requirement
-        uint256 balance = usdc.balanceOf(address(this));
-        uint256 outstandingPremiums = totalPremiums > totalPayouts ? totalPremiums - totalPayouts : 0;
-        uint256 requiredReserve = (outstandingPremiums * MIN_RESERVE_PERCENT) / BASIS_POINTS;
-        if (balance < fees + requiredReserve) {
-            revert InsufficientReserves(
-                balance > requiredReserve ? balance - requiredReserve : 0,
-                fees,
-                requiredReserve
-            );
-        }
-
         accumulatedFees = 0;
 
         usdc.safeTransfer(recipient, fees);
@@ -516,6 +657,6 @@ contract Treasury is
      * @return version The contract version string
      */
     function version() external pure returns (string memory) {
-        return "2.0.0"; // Batch C — Treasury narrowing
+        return "3.0.0"; // per-org treasury (v3)
     }
 }

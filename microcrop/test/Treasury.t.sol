@@ -73,18 +73,9 @@ contract TreasuryTest is Test {
         assertTrue(treasury.hasRole(ADMIN_ROLE, admin));
     }
 
-    function test_ReceivePremium() public {
-        uint256 policyId = 1;
-        uint256 expectedFee = (PREMIUM_AMOUNT * 10) / 100;
-        uint256 expectedNet = PREMIUM_AMOUNT - expectedFee;
-
-        vm.prank(backendRole);
-        treasury.receivePremium(policyId, PREMIUM_AMOUNT);
-
-        assertTrue(treasury.premiumReceived(policyId));
-        assertEq(treasury.totalPremiums(), expectedNet);
-        assertEq(treasury.accumulatedFees(), expectedFee);
-    }
+    // NOTE: receivePremium / requestPayout happy paths, duplicate guards, and per-org behavior
+    // are covered in PerOrgTreasury.t.sol (v3 needs a wired PolicyManager + a funded org reserve).
+    // The zero-amount guards below run before org resolution, so they stay here.
 
     function test_ReceivePremium_RevertOnZeroAmount() public {
         vm.prank(backendRole);
@@ -92,40 +83,10 @@ contract TreasuryTest is Test {
         treasury.receivePremium(1, 0);
     }
 
-    function test_ReceivePremium_RevertOnDuplicate() public {
-        vm.prank(backendRole);
-        treasury.receivePremium(1, PREMIUM_AMOUNT);
-
-        vm.prank(backendRole);
-        vm.expectRevert(abi.encodeWithSelector(Treasury.PremiumAlreadyReceived.selector, 1));
-        treasury.receivePremium(1, PREMIUM_AMOUNT);
-    }
-
-    function test_RequestPayout() public {
-        uint256 policyId = 1;
-        uint256 balanceBefore = usdc.balanceOf(backendWallet);
-
-        vm.prank(payoutRole);
-        treasury.requestPayout(policyId, PAYOUT_AMOUNT);
-
-        assertTrue(treasury.payoutProcessed(policyId));
-        assertEq(treasury.totalPayouts(), PAYOUT_AMOUNT);
-        assertEq(usdc.balanceOf(backendWallet), balanceBefore + PAYOUT_AMOUNT);
-    }
-
     function test_RequestPayout_RevertOnZeroAmount() public {
         vm.prank(payoutRole);
         vm.expectRevert(Treasury.ZeroAmount.selector);
         treasury.requestPayout(1, 0);
-    }
-
-    function test_RequestPayout_RevertOnDuplicate() public {
-        vm.prank(payoutRole);
-        treasury.requestPayout(1, PAYOUT_AMOUNT);
-
-        vm.prank(payoutRole);
-        vm.expectRevert(abi.encodeWithSelector(Treasury.PayoutAlreadyProcessed.selector, 1));
-        treasury.requestPayout(1, PAYOUT_AMOUNT);
     }
 
     function test_UpdatePlatformFee() public {
@@ -138,20 +99,6 @@ contract TreasuryTest is Test {
         vm.prank(admin);
         vm.expectRevert(abi.encodeWithSelector(Treasury.FeeTooHigh.selector, 21, 20));
         treasury.setPlatformFee(21);
-    }
-
-    function test_WithdrawFees() public {
-        vm.prank(backendRole);
-        treasury.receivePremium(1, PREMIUM_AMOUNT);
-
-        uint256 fees = treasury.accumulatedFees();
-        uint256 adminBalBefore = usdc.balanceOf(admin);
-
-        vm.prank(admin);
-        treasury.withdrawFees(admin);
-
-        assertEq(treasury.accumulatedFees(), 0);
-        assertEq(usdc.balanceOf(admin), adminBalBefore + fees);
     }
 
     function test_WithdrawFees_RevertOnNoFees() public {

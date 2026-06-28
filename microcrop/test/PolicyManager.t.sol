@@ -29,6 +29,9 @@ contract PolicyManagerTest is BaseTest {
     event PolicyActivated(uint256 indexed policyId, uint256 activatedAt);
     event PolicyClaimed(uint256 indexed policyId, uint256 claimedAt);
 
+    /// @dev Backing org (wallet key) for created policies (per-org-treasury / v3).
+    address constant ORG = address(0x019);
+
     function setUp() public {
         _deployContracts();
     }
@@ -43,7 +46,8 @@ contract PolicyManagerTest is BaseTest {
             VALID_SUM_INSURED,
             VALID_PREMIUM,
             VALID_DURATION,
-            PolicyManager.CoverageType.BOTH
+            PolicyManager.CoverageType.BOTH,
+            ORG
         );
     }
 
@@ -66,7 +70,7 @@ contract PolicyManagerTest is BaseTest {
         // The (max+1)-th creation must revert even though zero policies are ACTIVE.
         vm.prank(backend);
         vm.expectRevert(abi.encodeWithSelector(PolicyManager.TooManyActivePolicies.selector, farmer, max, max));
-        policyManager.createPolicy(farmer, VALID_PLOT_ID, VALID_SUM_INSURED, VALID_PREMIUM, VALID_DURATION, PolicyManager.CoverageType.BOTH);
+        policyManager.createPolicy(farmer, VALID_PLOT_ID, VALID_SUM_INSURED, VALID_PREMIUM, VALID_DURATION, PolicyManager.CoverageType.BOTH, ORG);
     }
 
     /// @notice Cancelling a PENDING policy frees its open-policy slot.
@@ -79,7 +83,7 @@ contract PolicyManagerTest is BaseTest {
         // At cap (all PENDING) — next create reverts.
         vm.prank(backend);
         vm.expectRevert(abi.encodeWithSelector(PolicyManager.TooManyActivePolicies.selector, farmer, max, max));
-        policyManager.createPolicy(farmer, VALID_PLOT_ID, VALID_SUM_INSURED, VALID_PREMIUM, VALID_DURATION, PolicyManager.CoverageType.BOTH);
+        policyManager.createPolicy(farmer, VALID_PLOT_ID, VALID_SUM_INSURED, VALID_PREMIUM, VALID_DURATION, PolicyManager.CoverageType.BOTH, ORG);
 
         // Cancel one PENDING policy → a slot frees up → create succeeds.
         vm.prank(backend);
@@ -107,7 +111,8 @@ contract PolicyManagerTest is BaseTest {
             VALID_SUM_INSURED,
             VALID_PREMIUM,
             VALID_DURATION,
-            PolicyManager.CoverageType.BOTH
+            PolicyManager.CoverageType.BOTH,
+            ORG
         );
 
         assertEq(policyId, 1);
@@ -127,7 +132,8 @@ contract PolicyManagerTest is BaseTest {
             VALID_SUM_INSURED,
             VALID_PREMIUM,
             VALID_DURATION,
-            PolicyManager.CoverageType.BOTH
+            PolicyManager.CoverageType.BOTH,
+            ORG
         );
     }
 
@@ -140,7 +146,8 @@ contract PolicyManagerTest is BaseTest {
             VALID_SUM_INSURED,
             VALID_PREMIUM,
             VALID_DURATION,
-            PolicyManager.CoverageType.BOTH
+            PolicyManager.CoverageType.BOTH,
+            ORG
         );
     }
 
