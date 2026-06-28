@@ -79,21 +79,34 @@ contract PerOrgTreasuryTest is BaseTest {
 
     function test_payout_fromOrgReserve_success() public {
         uint256 id = _activePolicy();
+        vm.prank(backend);
+        treasury.receivePremium(id, PREMIUM); // sets premiumReceived + seeds reserve
+        uint256 net = PREMIUM - (PREMIUM * 1000) / 10000; // 45 USDC
         vm.prank(ORG);
-        treasury.depositReserve(ORG, 600e6); // fund reserve above the payout
+        treasury.depositReserve(ORG, 600e6 - net); // top up to exactly 600 USDC
         uint256 backendBefore = usdc.balanceOf(backendWallet);
 
         treasury.requestPayout(id, 600e6); // this == PAYOUT_ROLE
 
         assertEq(treasury.orgReserve(ORG), 0, "org reserve not debited");
+        assertEq(treasury.totalOrgReserves(), 0, "totalOrgReserves not debited");
         assertEq(usdc.balanceOf(backendWallet) - backendBefore, 600e6, "payout not disbursed");
     }
 
     function test_payout_underfunded_reverts_loudly() public {
         uint256 id = _activePolicy();
+        vm.prank(backend);
+        treasury.receivePremium(id, PREMIUM);
+        uint256 net = PREMIUM - (PREMIUM * 1000) / 10000; // reserve == net (45 USDC)
+        vm.expectRevert(abi.encodeWithSelector(Treasury.InsufficientOrgReserve.selector, ORG, 600e6, net));
+        treasury.requestPayout(id, 600e6);
+    }
+
+    function test_payout_withoutPremium_reverts() public {
+        uint256 id = _activePolicy(); // never received a premium
         vm.prank(ORG);
-        treasury.depositReserve(ORG, 100e6); // less than the payout
-        vm.expectRevert(abi.encodeWithSelector(Treasury.InsufficientOrgReserve.selector, ORG, 600e6, 100e6));
+        treasury.depositReserve(ORG, 600e6); // reserve is funded, but premium not received
+        vm.expectRevert(abi.encodeWithSelector(Treasury.PremiumNotReceived.selector, id));
         treasury.requestPayout(id, 600e6);
     }
 
@@ -162,11 +175,53 @@ contract PerOrgTreasuryTest is BaseTest {
 
     function test_requestPayout_duplicate_reverts() public {
         uint256 id = _activePolicy();
-        vm.prank(ORG);
-        treasury.depositReserve(ORG, 1_200e6);
-        treasury.requestPayout(id, 600e6);
+        vm.prank(backend);
+        treasury.receivePremium(id, PREMIUM);
+        treasury.requestPayout(id, 10e6); // < net premium reserve
         vm.expectRevert(abi.encodeWithSelector(Treasury.PayoutAlreadyProcessed.selector, id));
-        treasury.requestPayout(id, 600e6);
+        treasury.requestPayout(id, 10e6);
+    }
+
+    // ── audit fixes: emergencyWithdraw cap + legacy org backfill ─────────────
+
+    function test_emergencyWithdraw_cannotTouchOrgReserves() public {
+        uint256 id = _activePolicy();
+        vm.prank(backend);
+        treasury.receivePremium(id, PREMIUM); // backed funds in the contract
+        uint256 backed = treasury.totalOrgReserves() + treasury.accumulatedFees();
+        // Send surplus USDC straight to the contract (e.g. by mistake).
+        usdc.mint(address(treasury), 30e6);
+
+        vm.startPrank(admin);
+        treasury.pause();
+        // Cannot pull more than the unbacked surplus (30).
+        vm.expectRevert(abi.encodeWithSelector(Treasury.ExceedsRecoverableSurplus.selector, 31e6, 30e6));
+        treasury.emergencyWithdraw(admin, 31e6);
+        // Exactly the surplus is recoverable; backed funds remain.
+        treasury.emergencyWithdraw(admin, 30e6);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(address(treasury)), backed, "backed funds must remain");
+        assertEq(treasury.totalOrgReserves(), PREMIUM - (PREMIUM * 1000) / 10000, "org reserves untouched");
+    }
+
+    function test_setLegacyPolicyOrg_backfillsOrg() public {
+        // A pre-v3 policy id (never created via v3 createPolicy) has _policyOrg == 0.
+        uint256 legacyId = 999;
+        assertEq(policyManager.policyOrg(legacyId), address(0), "should start unset");
+        vm.prank(admin);
+        policyManager.setLegacyPolicyOrg(legacyId, ORG);
+        assertEq(policyManager.policyOrg(legacyId), ORG, "backfill failed");
+
+        // Cannot overwrite an already-set org.
+        uint256 id = _activePolicy();
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(PolicyManager.OrgAlreadySet.selector, id));
+        policyManager.setLegacyPolicyOrg(id, ORG);
+
+        // Non-admin cannot backfill.
+        vm.prank(unauthorized);
+        vm.expectRevert();
+        policyManager.setLegacyPolicyOrg(1234, ORG);
     }
 
     function test_withdrawFees_toAdmin() public {

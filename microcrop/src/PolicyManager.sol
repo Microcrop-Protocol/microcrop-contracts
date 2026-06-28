@@ -290,6 +290,9 @@ contract PolicyManager is
     /// @notice Thrown when the backing org address is zero (per-org-treasury / v3)
     error ZeroAddressOrg();
 
+    /// @notice Thrown when a policy already has a backing org (legacy backfill guard)
+    error OrgAlreadySet(uint256 policyId);
+
     // ============ Constructor ============
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -334,6 +337,24 @@ contract PolicyManager is
         if (_policyNFT == address(0)) revert ZeroAddress();
         policyNFT = PolicyNFT(_policyNFT);
         emit PolicyNFTSet(_policyNFT);
+    }
+
+    /**
+     * @notice Backfill the backing org for a policy created before the per-org-treasury (v3)
+     *         upgrade. Without this, every pre-v3 policy reverts `OrgNotResolved` in the Treasury
+     *         (premium can't be recorded, payouts can't settle). Run for all live pre-v3 policies
+     *         as part of the v3 migration, BEFORE serving traffic.
+     * @dev Backfill-only (cannot overwrite an already-set org). If the policy is ACTIVE, its sum
+     *      insured is added to the org's outstanding exposure so `reserveRequired` is correct.
+     */
+    function setLegacyPolicyOrg(uint256 policyId, address org) external onlyRole(ADMIN_ROLE) {
+        if (org == address(0)) revert ZeroAddressOrg();
+        if (_policyOrg[policyId] != address(0)) revert OrgAlreadySet(policyId);
+        _policyOrg[policyId] = org;
+        // ACTIVE legacy coverage must count toward the org's outstanding exposure.
+        if (_policies[policyId].status == PolicyStatus.ACTIVE) {
+            _orgOutstandingSumInsured[org] += _policies[policyId].sumInsured;
+        }
     }
 
     // ============ External Functions ============

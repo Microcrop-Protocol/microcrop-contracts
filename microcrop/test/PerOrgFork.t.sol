@@ -82,12 +82,13 @@ contract PerOrgForkTest is Test {
     }
 
     function test_perOrg_settlesFromOrgReserve() public {
-        // Org funds its own reserve (insurer capital).
-        deal(USDC, address(this), 500e6);
+        // Org funds its own reserve (insurer capital), plus headroom for the premium.
+        deal(USDC, address(this), 520e6);
         IERC20(USDC).approve(TREASURY, type(uint256).max);
         treasury.depositReserve(org, 500e6);
 
         uint256 policyId = _newActivePolicy();
+        treasury.receivePremium(policyId, 1e6); // premium received (guard) + seeds reserve
         // 20% default reserve ratio on 1000 sum insured.
         assertEq(treasury.reserveRequired(org), 200e6, "reserveRequired");
 
@@ -108,12 +109,16 @@ contract PerOrgForkTest is Test {
     }
 
     function test_perOrg_underfunded_reverts() public {
-        // No reserve deposited — the org cannot cover the payout.
+        // Only the premium funds the reserve (no capital deposited) — far short of the payout.
+        deal(USDC, address(this), 1e6);
+        IERC20(USDC).approve(TREASURY, type(uint256).max);
         uint256 policyId = _newActivePolicy();
+        treasury.receivePremium(policyId, 1e6); // only the premium funds the reserve
+        uint256 reserve = treasury.orgReserve(org); // net premium (fee per live config)
         (PayoutReceiver.CropDetermination memory d, bytes memory sig) = _determination(policyId, 4800);
 
         vm.prank(relayer);
-        vm.expectRevert(abi.encodeWithSelector(Treasury.InsufficientOrgReserve.selector, org, d.payoutAmount, 0));
+        vm.expectRevert(abi.encodeWithSelector(Treasury.InsufficientOrgReserve.selector, org, d.payoutAmount, reserve));
         pr.submitDetermination(d, sig);
     }
 

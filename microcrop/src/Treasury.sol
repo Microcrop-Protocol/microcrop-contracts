@@ -135,8 +135,13 @@ contract Treasury is
     /// @notice Per-org platform fee in true bps. 0 = fall back to the global platformFeePercent. Platform-admin set.
     mapping(address => uint256) public orgFeeBps;
 
-    /// @dev Reserved storage gap (was 48; reduced by 4 for policyManager + 3 org mappings).
-    uint256[44] private __gap;
+    /// @notice Running sum of all orgReserve balances. Lets emergencyWithdraw recover only
+    ///         UNBACKED surplus (balance - totalOrgReserves - accumulatedFees), so it can never
+    ///         drain funds that back org reserves or platform fees.
+    uint256 public totalOrgReserves;
+
+    /// @dev Reserved storage gap (was 48; reduced by 5 for policyManager + 3 org mappings + totalOrgReserves).
+    uint256[43] private __gap;
 
     // ============ Events ============
 
@@ -230,6 +235,12 @@ contract Treasury is
 
     /// @notice Thrown when an org's reserve cannot cover a payout (LOUD — never a silent skip).
     error InsufficientOrgReserve(address org, uint256 required, uint256 available);
+
+    /// @notice Thrown when a payout is requested for a policy whose premium was never received.
+    error PremiumNotReceived(uint256 policyId);
+
+    /// @notice Thrown when emergencyWithdraw is asked for more than the unbacked recoverable surplus.
+    error ExceedsRecoverableSurplus(uint256 requested, uint256 recoverable);
 
     /// @notice Thrown when a policy has no resolvable backing org.
     error OrgNotResolved(uint256 policyId);
@@ -328,6 +339,7 @@ contract Treasury is
         peakPremiums += netPremium;
         // Credit the org's own reserve — this is the pool that backs its payouts.
         orgReserve[org] += netPremium;
+        totalOrgReserves += netPremium;
 
         // Transfer USDC from caller
         usdc.safeTransferFrom(msg.sender, address(this), amount);
@@ -357,6 +369,8 @@ contract Treasury is
         // Validate inputs
         if (amount == 0) revert ZeroAmount();
         if (payoutProcessed[policyId]) revert PayoutAlreadyProcessed(policyId);
+        // Defense-in-depth: never pay out a policy whose premium was never collected.
+        if (!premiumReceived[policyId]) revert PremiumNotReceived(policyId);
 
         // Per-org solvency: the payout is funded ONLY by the policy's org's own reserve.
         // If the org under-reserved, this REVERTS loudly (the farmer is owed money and the
@@ -371,6 +385,7 @@ contract Treasury is
         payoutProcessed[policyId] = true;
         totalPayouts += amount;
         orgReserve[org] = available - amount;
+        totalOrgReserves -= amount;
 
         // Transfer USDC to backend wallet (for M-Pesa offramp to the farmer)
         usdc.safeTransfer(backendWallet, amount);
@@ -391,6 +406,7 @@ contract Treasury is
         if (org == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
         orgReserve[org] += amount;
+        totalOrgReserves += amount;
         usdc.safeTransferFrom(msg.sender, address(this), amount);
         emit OrgReserveDeposited(org, msg.sender, amount);
     }
@@ -413,6 +429,7 @@ contract Treasury is
         if (remaining < required) revert WouldBreachReserve(org, required, remaining);
 
         orgReserve[org] = remaining;
+        totalOrgReserves -= amount;
         usdc.safeTransfer(to, amount);
         emit OrgSurplusWithdrawn(org, to, amount);
     }
@@ -543,9 +560,14 @@ contract Treasury is
         uint256 amount
     ) external onlyRole(ADMIN_ROLE) nonReentrant whenPaused {
         if (recipient == address(0)) revert ZeroAddress();
-        
+
+        // Only UNBACKED surplus may be recovered (e.g. tokens sent here by mistake) — never
+        // funds that back org reserves or accumulated fees. This preserves the solvency
+        // invariant: usdc.balanceOf(this) >= totalOrgReserves + accumulatedFees at all times.
         uint256 balance = usdc.balanceOf(address(this));
-        if (amount > balance) revert InsufficientBalance(amount, balance);
+        uint256 backed = totalOrgReserves + accumulatedFees;
+        uint256 recoverable = balance > backed ? balance - backed : 0;
+        if (amount > recoverable) revert ExceedsRecoverableSurplus(amount, recoverable);
 
         usdc.safeTransfer(recipient, amount);
 
