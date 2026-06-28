@@ -18,7 +18,10 @@ base_sepolia = "${BASE_SEPOLIA_RPC_URL}"
 base_mainnet = "${BASE_MAINNET_RPC_URL}"
 
 [etherscan]
-base_mainnet = { key = "${BASESCAN_API_KEY}", url = "https://api.basescan.org/api", chain = 8453 }
-base_sepolia = { key = "${BASESCAN_API_KEY}", url = "https://api-sepolia.basescan.org/api", chain = 84532 }
+# Etherscan API V2 (unified multichain endpoint). The old per-chain Basescan V1
+# URLs (api.basescan.org / api-sepolia.basescan.org) are deprecated and now
+# reject verification with "deprecated V1 endpoint". V2 routes by chain id.
+base_mainnet = { key = "${BASESCAN_API_KEY}", url = "https://api.etherscan.io/v2/api", chain = 8453 }
+base_sepolia = { key = "${BASESCAN_API_KEY}", url = "https://api.etherscan.io/v2/api", chain = 84532 }
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
