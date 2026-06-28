@@ -7,16 +7,6 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/U
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {PolicyNFT} from "./PolicyNFT.sol";
 
-/// @notice Minimal interface for RiskPool exposure tracking
-interface IRiskPoolExposure {
-    function updateExposure(uint256 policyId, int256 delta) external;
-}
-
-/// @notice Minimal interface for RiskPoolFactory pool validation
-interface IRiskPoolFactory {
-    function isValidPool(address poolAddress) external view returns (bool);
-}
-
 /**
  * @title PolicyManager
  * @notice Manages the complete lifecycle of parametric crop insurance policies
@@ -160,11 +150,14 @@ contract PolicyManager is
     /// @notice PolicyNFT contract for minting farmer certificates
     PolicyNFT public policyNFT;
 
-    /// @notice Mapping from policy ID to the RiskPool backing it
-    mapping(uint256 => address) private _policyPools;
+    /// @dev DEPRECATED (Batch C — RiskPool removal). Slot retained for storage-layout
+    ///      compatibility; no longer read or written. Was `_policyPools` (policy -> backing pool).
+    mapping(uint256 => address) private __deprecated_policyPools;
 
-    /// @notice RiskPoolFactory contract for pool validation
-    IRiskPoolFactory public riskPoolFactory;
+    /// @dev DEPRECATED (Batch C). Slot retained; was `IRiskPoolFactory public riskPoolFactory`.
+    ///      A contract reference and an address occupy the same single 20-byte slot, so this is
+    ///      layout-identical to the prior declaration.
+    address private __deprecated_riskPoolFactory;
 
     /// @notice Mapping from farmer address to count of PENDING (created, not yet activated) policies.
     /// @dev Appended in this upgrade (consumes the first former __gap slot). Together with
@@ -286,15 +279,6 @@ contract PolicyManager is
     /// @notice Thrown when distributor address is zero
     error ZeroAddressDistributor();
 
-    /// @notice Thrown when pool address is zero
-    error ZeroAddressPool();
-
-    /// @notice Thrown when pool address is not registered in the factory
-    error InvalidPool(address poolAddress);
-
-    /// @notice Thrown when riskPoolFactory has not been configured
-    error FactoryNotSet();
-
     // ============ Constructor ============
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -339,16 +323,6 @@ contract PolicyManager is
         if (_policyNFT == address(0)) revert ZeroAddress();
         policyNFT = PolicyNFT(_policyNFT);
         emit PolicyNFTSet(_policyNFT);
-    }
-
-    /**
-     * @notice Sets the RiskPoolFactory contract address for pool validation
-     * @dev Only callable by ADMIN_ROLE.
-     * @param _factory Address of the RiskPoolFactory contract
-     */
-    function setRiskPoolFactory(address _factory) external onlyRole(ADMIN_ROLE) {
-        if (_factory == address(0)) revert ZeroAddress();
-        riskPoolFactory = IRiskPoolFactory(_factory);
     }
 
     // ============ External Functions ============
@@ -472,8 +446,7 @@ contract PolicyManager is
         uint256 policyId,
         address distributor,
         string calldata distributorName,
-        string calldata region,
-        address poolAddress
+        string calldata region
     )
         external
         onlyRole(BACKEND_ROLE)
@@ -487,19 +460,6 @@ contract PolicyManager is
         // Check distributor address
         if (distributor == address(0)) {
             revert ZeroAddressDistributor();
-        }
-
-        // Check pool address
-        if (poolAddress == address(0)) {
-            revert ZeroAddressPool();
-        }
-
-        // Validate pool is registered in the factory
-        if (address(riskPoolFactory) == address(0)) {
-            revert FactoryNotSet();
-        }
-        if (!riskPoolFactory.isValidPool(poolAddress)) {
-            revert InvalidPool(poolAddress);
         }
 
         Policy storage policy = _policies[policyId];
@@ -534,9 +494,6 @@ contract PolicyManager is
         policy.startDate = block.timestamp;
         policy.endDate = block.timestamp + duration;
 
-        // Store the backing pool for this policy
-        _policyPools[policyId] = poolAddress;
-
         // Move the farmer's slot from PENDING to ACTIVE (guard the decrement against any
         // pre-upgrade PENDING policy that was never counted).
         unchecked {
@@ -547,9 +504,6 @@ contract PolicyManager is
                 --_farmerPendingCounts[policy.farmer];
             }
         }
-
-        // Update pool exposure
-        IRiskPoolExposure(poolAddress).updateExposure(policyId, int256(policy.sumInsured));
 
         // Mint NFT certificate to the farmer
         policyNFT.mintPolicy(
@@ -608,11 +562,7 @@ contract PolicyManager is
             }
         }
 
-        // Release pool exposure
-        address pool = _policyPools[policyId];
-        if (pool != address(0)) {
-            IRiskPoolExposure(pool).updateExposure(policyId, -int256(policy.sumInsured));
-        }
+        // (Batch C) pool exposure tracking removed with RiskPool.
 
         // Update NFT status to inactive (allows transfer)
         if (address(policyNFT) != address(0)) {
@@ -691,11 +641,7 @@ contract PolicyManager is
                     --_farmerActiveCounts[policy.farmer];
                 }
             }
-            // Release pool exposure
-            address pool = _policyPools[policyId];
-            if (pool != address(0)) {
-                IRiskPoolExposure(pool).updateExposure(policyId, -int256(policy.sumInsured));
-            }
+            // (Batch C) pool exposure tracking removed with RiskPool.
             // Update NFT status to inactive (allows transfer)
             if (address(policyNFT) != address(0)) {
                 policyNFT.updatePolicyStatus(policyId, false);
@@ -753,11 +699,7 @@ contract PolicyManager is
             }
         }
 
-        // Release pool exposure
-        address pool = _policyPools[policyId];
-        if (pool != address(0)) {
-            IRiskPoolExposure(pool).updateExposure(policyId, -int256(policy.sumInsured));
-        }
+        // (Batch C) pool exposure tracking removed with RiskPool.
 
         // Update NFT status to inactive
         if (address(policyNFT) != address(0)) {
@@ -870,12 +812,12 @@ contract PolicyManager is
     }
 
     /**
-     * @notice Returns the RiskPool address backing a policy
-     * @param policyId The unique identifier of the policy
-     * @return pool The RiskPool address (zero if not set, e.g. pre-upgrade policies)
+     * @notice DEPRECATED (Batch C — RiskPool removed). Retained for ABI stability.
+     * @dev Always returns the zero address; policies are no longer backed by a pool.
+     * @return pool Always `address(0)`.
      */
-    function getPolicyPool(uint256 policyId) external view returns (address pool) {
-        return _policyPools[policyId];
+    function getPolicyPool(uint256) external pure returns (address pool) {
+        return address(0);
     }
 
     /**
@@ -883,6 +825,6 @@ contract PolicyManager is
      * @return The contract version string
      */
     function version() external pure returns (string memory) {
-        return "1.0.0";
+        return "2.0.0"; // Batch C — RiskPool removal
     }
 }
