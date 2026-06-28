@@ -165,8 +165,16 @@ contract PolicyManager is
     ///      _farmerPolicies array growth (previously only ACTIVE was capped).
     mapping(address => uint256) private _farmerPendingCounts;
 
-    /// @dev Reserved storage gap for future upgrades (was 47; reduced by 1 for _farmerPendingCounts).
-    uint256[46] private __gap;
+    /// @notice Per-policy org key (the org's wallet address). Set at createPolicy. Enables the
+    ///         Treasury to resolve which org's reserve backs a policy (per-org-treasury / v3).
+    mapping(uint256 => address) private _policyOrg;
+
+    /// @notice Per-org outstanding (ACTIVE, unpaid) sum insured, aggregated across all products.
+    ///         Drives the Treasury's reserveRequired(org) solvency check.
+    mapping(address => uint256) private _orgOutstandingSumInsured;
+
+    /// @dev Reserved storage gap (was 46; reduced by 2 for _policyOrg + _orgOutstandingSumInsured).
+    uint256[44] private __gap;
 
     // ============ Events ============
 
@@ -279,6 +287,12 @@ contract PolicyManager is
     /// @notice Thrown when distributor address is zero
     error ZeroAddressDistributor();
 
+    /// @notice Thrown when the backing org address is zero (per-org-treasury / v3)
+    error ZeroAddressOrg();
+
+    /// @notice Thrown when a policy already has a backing org (legacy backfill guard)
+    error OrgAlreadySet(uint256 policyId);
+
     // ============ Constructor ============
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -325,6 +339,24 @@ contract PolicyManager is
         emit PolicyNFTSet(_policyNFT);
     }
 
+    /**
+     * @notice Backfill the backing org for a policy created before the per-org-treasury (v3)
+     *         upgrade. Without this, every pre-v3 policy reverts `OrgNotResolved` in the Treasury
+     *         (premium can't be recorded, payouts can't settle). Run for all live pre-v3 policies
+     *         as part of the v3 migration, BEFORE serving traffic.
+     * @dev Backfill-only (cannot overwrite an already-set org). If the policy is ACTIVE, its sum
+     *      insured is added to the org's outstanding exposure so `reserveRequired` is correct.
+     */
+    function setLegacyPolicyOrg(uint256 policyId, address org) external onlyRole(ADMIN_ROLE) {
+        if (org == address(0)) revert ZeroAddressOrg();
+        if (_policyOrg[policyId] != address(0)) revert OrgAlreadySet(policyId);
+        _policyOrg[policyId] = org;
+        // ACTIVE legacy coverage must count toward the org's outstanding exposure.
+        if (_policies[policyId].status == PolicyStatus.ACTIVE) {
+            _orgOutstandingSumInsured[org] += _policies[policyId].sumInsured;
+        }
+    }
+
     // ============ External Functions ============
 
     /**
@@ -353,11 +385,18 @@ contract PolicyManager is
         uint256 sumInsured,
         uint256 premium,
         uint256 durationDays,
-        CoverageType coverageType
+        CoverageType coverageType,
+        address org
     ) external onlyRole(BACKEND_ROLE) nonReentrant returns (uint256 policyId) {
         // Validate farmer address
         if (farmer == address(0)) {
             revert ZeroAddressFarmer();
+        }
+
+        // Every policy is backed by an org's reserve (per-org-treasury / v3). The org key is
+        // the org's wallet address; it must be set so payouts can resolve the backing reserve.
+        if (org == address(0)) {
+            revert ZeroAddressOrg();
         }
 
         // Validate sum insured bounds
@@ -409,6 +448,9 @@ contract PolicyManager is
             status: PolicyStatus.PENDING,
             createdAt: block.timestamp
         });
+
+        // Record the backing org (its reserve funds any payout for this policy).
+        _policyOrg[policyId] = org;
 
         // Update farmer's policy tracking
         _farmerPolicies[farmer].push(policyId);
@@ -505,6 +547,10 @@ contract PolicyManager is
             }
         }
 
+        // The policy is now ACTIVE coverage — add its sum insured to the org's outstanding
+        // exposure, which the Treasury's reserveRequired(org) solvency check draws on.
+        _orgOutstandingSumInsured[_policyOrg[policyId]] += policy.sumInsured;
+
         // Mint NFT certificate to the farmer
         policyNFT.mintPolicy(
             policy.farmer,
@@ -561,6 +607,9 @@ contract PolicyManager is
                 --_farmerActiveCounts[policy.farmer];
             }
         }
+
+        // Coverage ended (claimed) — release the org's outstanding exposure.
+        _releaseOrgExposure(policyId, policy.sumInsured);
 
         // (Batch C) pool exposure tracking removed with RiskPool.
 
@@ -641,7 +690,8 @@ contract PolicyManager is
                     --_farmerActiveCounts[policy.farmer];
                 }
             }
-            // (Batch C) pool exposure tracking removed with RiskPool.
+            // Active coverage cancelled — release the org's outstanding exposure.
+            _releaseOrgExposure(policyId, policy.sumInsured);
             // Update NFT status to inactive (allows transfer)
             if (address(policyNFT) != address(0)) {
                 policyNFT.updatePolicyStatus(policyId, false);
@@ -698,6 +748,9 @@ contract PolicyManager is
                 --_farmerActiveCounts[policy.farmer];
             }
         }
+
+        // Coverage expired — release the org's outstanding exposure.
+        _releaseOrgExposure(policyId, policy.sumInsured);
 
         // (Batch C) pool exposure tracking removed with RiskPool.
 
@@ -820,11 +873,32 @@ contract PolicyManager is
         return address(0);
     }
 
+    /// @notice The org (wallet address) whose reserve backs a policy. Zero if unknown
+    ///         (pre-v3 policies created before per-org-treasury).
+    function policyOrg(uint256 policyId) external view returns (address) {
+        return _policyOrg[policyId];
+    }
+
+    /// @notice An org's outstanding (ACTIVE, unpaid) sum insured across all products.
+    ///         The Treasury multiplies this by the org's reserve ratio to require reserves.
+    function orgOutstandingSumInsured(address org) external view returns (uint256) {
+        return _orgOutstandingSumInsured[org];
+    }
+
+    /// @dev Release an org's outstanding exposure when a policy leaves ACTIVE coverage
+    ///      (claimed / cancelled / expired). Guards underflow for pre-v3 policies whose
+    ///      exposure was never recorded.
+    function _releaseOrgExposure(uint256 policyId, uint256 sumInsured) private {
+        address org = _policyOrg[policyId];
+        uint256 outstanding = _orgOutstandingSumInsured[org];
+        _orgOutstandingSumInsured[org] = outstanding > sumInsured ? outstanding - sumInsured : 0;
+    }
+
     /**
      * @notice Returns the contract version for upgrade tracking
      * @return The contract version string
      */
     function version() external pure returns (string memory) {
-        return "2.0.0"; // Batch C — RiskPool removal
+        return "3.0.0"; // per-org treasury (v3)
     }
 }

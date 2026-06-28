@@ -48,7 +48,8 @@ contract DriveDeterminationSepolia is Script {
         vm.startBroadcast();
 
         // PENDING policy. premium=1 (1 base unit) keeps it cheap; duration 30 days.
-        uint256 policyId = pm.createPolicy(farmer, 1, sumInsured, 1, 30, PolicyManager.CoverageType.DROUGHT);
+        // org (per-org-treasury / v3) = the broadcaster for the rehearsal.
+        uint256 policyId = pm.createPolicy(farmer, 1, sumInsured, 1, 30, PolicyManager.CoverageType.DROUGHT, distributor);
 
         // Pool-free activation (Batch C): no pool arg. Mints the policy NFT.
         pm.activatePolicy(policyId, distributor, "RehearsalDist", "KE");
