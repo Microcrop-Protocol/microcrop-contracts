@@ -20,7 +20,7 @@ contract PolicyNFTTest is Test {
 
     function setUp() public {
         nft = new PolicyNFT("MicroCrop Insurance Certificate", "mcINS");
-        
+
         // Grant minter role
         nft.grantRole(nft.MINTER_ROLE(), minter);
     }
@@ -90,13 +90,35 @@ contract PolicyNFTTest is Test {
 
     function test_MintPolicy_TracksDistributorPolicies() public {
         vm.startPrank(minter);
-        
-        nft.mintPolicy(farmer1, 1, distributor1, "Dist1", 100_000e6, 5_000e6, 
-            block.timestamp, block.timestamp + 180 days, PolicyNFT.CoverageType.DROUGHT, "Kenya", 1);
-        
-        nft.mintPolicy(farmer2, 2, distributor1, "Dist1", 50_000e6, 2_500e6,
-            block.timestamp, block.timestamp + 90 days, PolicyNFT.CoverageType.FLOOD, "Tanzania", 2);
-        
+
+        nft.mintPolicy(
+            farmer1,
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            1
+        );
+
+        nft.mintPolicy(
+            farmer2,
+            2,
+            distributor1,
+            "Dist1",
+            50_000e6,
+            2_500e6,
+            block.timestamp,
+            block.timestamp + 90 days,
+            PolicyNFT.CoverageType.FLOOD,
+            "Tanzania",
+            2
+        );
+
         vm.stopPrank();
 
         uint256[] memory distPolicies = nft.getDistributorPolicies(distributor1);
@@ -111,9 +133,17 @@ contract PolicyNFTTest is Test {
 
         vm.prank(minter);
         nft.mintPolicy(
-            farmer1, 1, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days, 
-            PolicyNFT.CoverageType.DROUGHT, "Kenya", 12345
+            farmer1,
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            12345
         );
     }
 
@@ -121,9 +151,17 @@ contract PolicyNFTTest is Test {
         vm.prank(farmer1);
         vm.expectRevert();
         nft.mintPolicy(
-            farmer1, 1, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.DROUGHT, "Kenya", 12345
+            farmer1,
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            12345
         );
     }
 
@@ -131,24 +169,52 @@ contract PolicyNFTTest is Test {
         vm.prank(minter);
         vm.expectRevert(PolicyNFT.ZeroAddress.selector);
         nft.mintPolicy(
-            address(0), 1, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.DROUGHT, "Kenya", 12345
+            address(0),
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            12345
         );
     }
 
     function test_MintPolicy_DuplicatePolicy_Reverts() public {
         vm.startPrank(minter);
-        
-        nft.mintPolicy(farmer1, 1, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.DROUGHT, "Kenya", 12345);
+
+        nft.mintPolicy(
+            farmer1,
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            12345
+        );
 
         vm.expectRevert(abi.encodeWithSelector(PolicyNFT.PolicyAlreadyMinted.selector, 1));
-        nft.mintPolicy(farmer2, 1, distributor1, "Dist1", 50_000e6, 2_500e6,
-            block.timestamp, block.timestamp + 90 days,
-            PolicyNFT.CoverageType.FLOOD, "Tanzania", 67890);
-        
+        nft.mintPolicy(
+            farmer2,
+            1,
+            distributor1,
+            "Dist1",
+            50_000e6,
+            2_500e6,
+            block.timestamp,
+            block.timestamp + 90 days,
+            PolicyNFT.CoverageType.FLOOD,
+            "Tanzania",
+            67890
+        );
+
         vm.stopPrank();
     }
 
@@ -156,10 +222,20 @@ contract PolicyNFTTest is Test {
 
     function test_UpdatePolicyStatus_Success() public {
         vm.startPrank(minter);
-        
-        nft.mintPolicy(farmer1, 1, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.DROUGHT, "Kenya", 12345);
+
+        nft.mintPolicy(
+            farmer1,
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            12345
+        );
 
         PolicyNFT.PolicyCertificate memory certBefore = nft.getCertificate(1);
         assertTrue(certBefore.isActive);
@@ -168,21 +244,31 @@ contract PolicyNFTTest is Test {
 
         PolicyNFT.PolicyCertificate memory certAfter = nft.getCertificate(1);
         assertFalse(certAfter.isActive);
-        
+
         vm.stopPrank();
     }
 
     function test_UpdatePolicyStatus_EmitsEvent() public {
         vm.startPrank(minter);
-        
-        nft.mintPolicy(farmer1, 1, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.DROUGHT, "Kenya", 12345);
+
+        nft.mintPolicy(
+            farmer1,
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            12345
+        );
 
         vm.expectEmit(true, false, false, true);
         emit PolicyNFT.PolicyStatusUpdated(1, false);
         nft.updatePolicyStatus(1, false);
-        
+
         vm.stopPrank();
     }
 
@@ -196,9 +282,19 @@ contract PolicyNFTTest is Test {
 
     function test_Transfer_WhileActive_Reverts() public {
         vm.prank(minter);
-        nft.mintPolicy(farmer1, 1, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.DROUGHT, "Kenya", 12345);
+        nft.mintPolicy(
+            farmer1,
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            12345
+        );
 
         // Try to transfer while active
         vm.prank(farmer1);
@@ -208,9 +304,19 @@ contract PolicyNFTTest is Test {
 
     function test_Transfer_AfterDeactivation_Succeeds() public {
         vm.prank(minter);
-        nft.mintPolicy(farmer1, 1, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.DROUGHT, "Kenya", 12345);
+        nft.mintPolicy(
+            farmer1,
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            12345
+        );
 
         // Deactivate the policy
         vm.prank(minter);
@@ -227,19 +333,29 @@ contract PolicyNFTTest is Test {
 
     function test_TokenURI_ReturnsBase64JSON() public {
         vm.prank(minter);
-        nft.mintPolicy(farmer1, 1, distributor1, "Kenya Farmers Alliance", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.DROUGHT, "Kenya", 12345);
+        nft.mintPolicy(
+            farmer1,
+            1,
+            distributor1,
+            "Kenya Farmers Alliance",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            12345
+        );
 
         string memory uri = nft.tokenURI(1);
-        
+
         // Should start with data:application/json;base64,
         assertTrue(bytes(uri).length > 29);
-        
+
         // Check prefix
         bytes memory prefix = bytes("data:application/json;base64,");
         bytes memory uriBytes = bytes(uri);
-        for (uint i = 0; i < prefix.length; i++) {
+        for (uint256 i = 0; i < prefix.length; i++) {
             assertEq(uriBytes[i], prefix[i]);
         }
     }
@@ -255,9 +371,19 @@ contract PolicyNFTTest is Test {
     ///         variable-length buffer math is correct.
     function test_TokenURI_AmpersandNameIsSafe() public {
         vm.prank(minter);
-        nft.mintPolicy(farmer1, 1, distributor1, "Farmers & Co & <script>&#x3C;", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.DROUGHT, "A & B", 12345);
+        nft.mintPolicy(
+            farmer1,
+            1,
+            distributor1,
+            "Farmers & Co & <script>&#x3C;",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "A & B",
+            12345
+        );
 
         string memory uri = nft.tokenURI(1);
         assertTrue(bytes(uri).length > 29, "tokenURI empty/short: buffer math broke on ampersand");
@@ -267,15 +393,35 @@ contract PolicyNFTTest is Test {
 
     function test_Enumerable_TokenOfOwnerByIndex() public {
         vm.startPrank(minter);
-        
-        nft.mintPolicy(farmer1, 1, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.DROUGHT, "Kenya", 1);
-        
-        nft.mintPolicy(farmer1, 2, distributor1, "Dist1", 50_000e6, 2_500e6,
-            block.timestamp, block.timestamp + 90 days,
-            PolicyNFT.CoverageType.FLOOD, "Tanzania", 2);
-        
+
+        nft.mintPolicy(
+            farmer1,
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            1
+        );
+
+        nft.mintPolicy(
+            farmer1,
+            2,
+            distributor1,
+            "Dist1",
+            50_000e6,
+            2_500e6,
+            block.timestamp,
+            block.timestamp + 90 days,
+            PolicyNFT.CoverageType.FLOOD,
+            "Tanzania",
+            2
+        );
+
         vm.stopPrank();
 
         assertEq(nft.balanceOf(farmer1), 2);
@@ -287,19 +433,39 @@ contract PolicyNFTTest is Test {
         assertEq(nft.totalSupply(), 0);
 
         vm.startPrank(minter);
-        
-        nft.mintPolicy(farmer1, 1, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.DROUGHT, "Kenya", 1);
-        
+
+        nft.mintPolicy(
+            farmer1,
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            1
+        );
+
         assertEq(nft.totalSupply(), 1);
 
-        nft.mintPolicy(farmer2, 2, distributor2, "Dist2", 50_000e6, 2_500e6,
-            block.timestamp, block.timestamp + 90 days,
-            PolicyNFT.CoverageType.FLOOD, "Tanzania", 2);
-        
+        nft.mintPolicy(
+            farmer2,
+            2,
+            distributor2,
+            "Dist2",
+            50_000e6,
+            2_500e6,
+            block.timestamp,
+            block.timestamp + 90 days,
+            PolicyNFT.CoverageType.FLOOD,
+            "Tanzania",
+            2
+        );
+
         assertEq(nft.totalSupply(), 2);
-        
+
         vm.stopPrank();
     }
 
@@ -335,9 +501,19 @@ contract PolicyNFTTest is Test {
         assertFalse(nft.policyNFTExists(1));
 
         vm.prank(minter);
-        nft.mintPolicy(farmer1, 1, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.DROUGHT, "Kenya", 12345);
+        nft.mintPolicy(
+            farmer1,
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            12345
+        );
 
         assertTrue(nft.policyNFTExists(1));
         assertFalse(nft.policyNFTExists(2));
@@ -348,17 +524,47 @@ contract PolicyNFTTest is Test {
     function test_AllCoverageTypes() public {
         vm.startPrank(minter);
 
-        nft.mintPolicy(farmer1, 1, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.DROUGHT, "Kenya", 1);
+        nft.mintPolicy(
+            farmer1,
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            1
+        );
 
-        nft.mintPolicy(farmer1, 2, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.FLOOD, "Kenya", 2);
+        nft.mintPolicy(
+            farmer1,
+            2,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.FLOOD,
+            "Kenya",
+            2
+        );
 
-        nft.mintPolicy(farmer1, 3, distributor1, "Dist1", 100_000e6, 5_000e6,
-            block.timestamp, block.timestamp + 180 days,
-            PolicyNFT.CoverageType.BOTH, "Kenya", 3);
+        nft.mintPolicy(
+            farmer1,
+            3,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.BOTH,
+            "Kenya",
+            3
+        );
 
         vm.stopPrank();
 

@@ -105,20 +105,11 @@ contract UpgradePerOrgTreasury is Script {
 
         // ── v3 wiring: Treasury must know the PolicyManager to resolve a policy's org ──
         ITreasuryV3(treasuryProxy).setPolicyManager(pmProxy);
-        require(
-            ITreasuryV3(treasuryProxy).policyManager() == pmProxy,
-            "Treasury.setPolicyManager did not take"
-        );
+        require(ITreasuryV3(treasuryProxy).policyManager() == pmProxy, "Treasury.setPolicyManager did not take");
 
         // ── Role survival: the upgrades must not disturb cross-contract grants ──
-        require(
-            IRoleView(treasuryProxy).hasRole(PAYOUT_ROLE, prProxy),
-            "PayoutReceiver lost PAYOUT_ROLE on Treasury"
-        );
-        require(
-            IRoleView(pmProxy).hasRole(ORACLE_ROLE, prProxy),
-            "PayoutReceiver lost ORACLE_ROLE on PolicyManager"
-        );
+        require(IRoleView(treasuryProxy).hasRole(PAYOUT_ROLE, prProxy), "PayoutReceiver lost PAYOUT_ROLE on Treasury");
+        require(IRoleView(pmProxy).hasRole(ORACLE_ROLE, prProxy), "PayoutReceiver lost ORACLE_ROLE on PolicyManager");
 
         vm.stopBroadcast();
 
@@ -127,11 +118,7 @@ contract UpgradePerOrgTreasury is Script {
         console.log("Next: run backend backfill-legacy-policy-org, then set per-org reserve ratios.");
     }
 
-    function _resolve()
-        internal
-        view
-        returns (address pm, address treasury, address pr, string memory net)
-    {
+    function _resolve() internal view returns (address pm, address treasury, address pr, string memory net) {
         if (block.chainid == 8453) return (PM_MAINNET, TREASURY_MAINNET, PR_MAINNET, "Base Mainnet (8453)");
         if (block.chainid == 84532) return (PM_SEPOLIA, TREASURY_SEPOLIA, PR_SEPOLIA, "Base Sepolia (84532)");
         revert("Unsupported chain - use base_mainnet (8453) or base_sepolia (84532)");

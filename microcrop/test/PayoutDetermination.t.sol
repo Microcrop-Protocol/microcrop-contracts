@@ -11,18 +11,36 @@ contract MockPolicyManager {
     uint256 public claimedId;
     address public claimedFarmer;
 
-    function setPolicy(PolicyManager.Policy calldata p) external { _policy = p; }
-    function policyExists(uint256) external pure returns (bool) { return true; }
-    function getPolicy(uint256) external view returns (PolicyManager.Policy memory) { return _policy; }
-    function canFarmerClaim(address) external pure returns (bool) { return true; }
-    function markAsClaimed(uint256 id) external { claimedId = id; }
-    function incrementClaimCount(address farmer) external { claimedFarmer = farmer; }
+    function setPolicy(PolicyManager.Policy calldata p) external {
+        _policy = p;
+    }
+
+    function policyExists(uint256) external pure returns (bool) {
+        return true;
+    }
+
+    function getPolicy(uint256) external view returns (PolicyManager.Policy memory) {
+        return _policy;
+    }
+
+    function canFarmerClaim(address) external pure returns (bool) {
+        return true;
+    }
+
+    function markAsClaimed(uint256 id) external {
+        claimedId = id;
+    }
+
+    function incrementClaimCount(address farmer) external {
+        claimedFarmer = farmer;
+    }
 }
 
 /// @notice Minimal Treasury stand-in — records the payout instruction.
 contract MockTreasury {
     uint256 public lastPolicyId;
     uint256 public lastAmount;
+
     function requestPayout(uint256 policyId, uint256 amount) external {
         lastPolicyId = policyId;
         lastAmount = amount;
@@ -33,16 +51,16 @@ contract MockTreasury {
 ///         at the Solidity/EVM layer. Mirrors conformance-vectors/crop-damage-v1.0.json.
 contract PayoutDeterminationTest is Test {
     // ── Frozen fixture values (conformance-vectors/crop-damage-v1.0.json) ──
-    uint256 constant FIXTURE_PK          = uint256(keccak256("microcrop-test-pkp-v1"));
-    address constant FIXTURE_SIGNER      = 0xF18685788a4261DDA4f036D236066533a91C5ABE;
+    uint256 constant FIXTURE_PK = uint256(keccak256("microcrop-test-pkp-v1"));
+    address constant FIXTURE_SIGNER = 0xF18685788a4261DDA4f036D236066533a91C5ABE;
     bytes32 constant FIXTURE_INPUTS_HASH = 0x00c9518d24a624358f4d8fb8b02334662ffe0c055e2ad47f41a98c27b253ffe2;
-    bytes32 constant FIXTURE_PREIMAGE    = 0x6327a4a82c9df61cdd4c391a1250d50c1500d290ec195609654e576ccacb2947;
+    bytes32 constant FIXTURE_PREIMAGE = 0x6327a4a82c9df61cdd4c391a1250d50c1500d290ec195609654e576ccacb2947;
     // crop-damage-satonly-v1.0.json — weatherPresent=0, satellite=45 -> 4500bp (renormalized)
     bytes32 constant FIXTURE_SATONLY_PREIMAGE = 0x8a67a201014c8131d8a18f79764bc386ed3b1966321a6b52f68f7a6ceeabe1c1;
     // The fixture's domain (§6.3): chainId + verifyingContract are bound into the preimage.
     // To reproduce the literal fixture bytes, the test environment must match BOTH.
-    uint256 constant FIXTURE_CHAIN_ID    = 8453;
-    address constant FIXTURE_CONTRACT    = 0x522b5Ff31E21CD71C76fedE44297D99e40D820cf;
+    uint256 constant FIXTURE_CHAIN_ID = 8453;
+    address constant FIXTURE_CONTRACT = 0x522b5Ff31E21CD71C76fedE44297D99e40D820cf;
 
     PayoutReceiver pr;
     MockPolicyManager pm;
@@ -67,18 +85,20 @@ contract PayoutDeterminationTest is Test {
         pr.initialize(address(treasury), address(pm), admin);
 
         // Policy matching the fixture: id 1234, sumInsured 1e9 (1000 USDC), ACTIVE, far-future end.
-        pm.setPolicy(PolicyManager.Policy({
-            id: 1234,
-            farmer: address(0xFA12),
-            plotId: 1,
-            sumInsured: 1_000_000_000,
-            premium: 1,
-            startDate: 1,
-            endDate: type(uint256).max,
-            coverageType: PolicyManager.CoverageType.DROUGHT,
-            status: PolicyManager.PolicyStatus.ACTIVE,
-            createdAt: 1
-        }));
+        pm.setPolicy(
+            PolicyManager.Policy({
+                id: 1234,
+                farmer: address(0xFA12),
+                plotId: 1,
+                sumInsured: 1_000_000_000,
+                premium: 1,
+                startDate: 1,
+                endDate: type(uint256).max,
+                coverageType: PolicyManager.CoverageType.DROUGHT,
+                status: PolicyManager.PolicyStatus.ACTIVE,
+                createdAt: 1
+            })
+        );
 
         vm.startPrank(admin);
         pr.setAuthorizedSigner(FIXTURE_SIGNER);
@@ -167,8 +187,8 @@ contract PayoutDeterminationTest is Test {
     ///         by the negative latitude / sub-zero temp already in the happy-path fixture.)
     function test_tamperedEvidence_revertsInvalidSignature() public {
         PayoutReceiver.CropDetermination memory d = _fixtureDetermination();
-        bytes memory sig = _sign(FIXTURE_PREIMAGE);     // signature over the untampered hash
-        d.latitude_e6 = -1_286_390;                     // one unit off
+        bytes memory sig = _sign(FIXTURE_PREIMAGE); // signature over the untampered hash
+        d.latitude_e6 = -1_286_390; // one unit off
 
         vm.prank(relayer);
         vm.expectRevert(); // InvalidSignature(recovered, expected)
@@ -216,10 +236,20 @@ contract PayoutDeterminationTest is Test {
 
     /// @notice The contract's inputsHash reconstruction matches the fixture (abi.encode path).
     function test_inputsHash_matchesFixture() public pure {
-        bytes32 ih = keccak256(abi.encode(
-            uint256(1234), int256(-1_286_389), int256(36_817_223), uint256(1_000_000_000),
-            int256(3100), uint256(1), int256(-350), uint256(0), uint256(55), uint256(1200)
-        ));
+        bytes32 ih = keccak256(
+            abi.encode(
+                uint256(1234),
+                int256(-1_286_389),
+                int256(36_817_223),
+                uint256(1_000_000_000),
+                int256(3100),
+                uint256(1),
+                int256(-350),
+                uint256(0),
+                uint256(55),
+                uint256(1200)
+            )
+        );
         assertEq(ih, FIXTURE_INPUTS_HASH, "inputsHash drift");
     }
 
@@ -248,7 +278,9 @@ contract PayoutDeterminationTest is Test {
         bytes memory sig = _sign(FIXTURE_SATONLY_PREIMAGE);
 
         vm.prank(relayer);
-        vm.expectRevert(abi.encodeWithSelector(PayoutReceiver.WeatherFlagDamageMismatch.selector, uint256(0), uint256(10)));
+        vm.expectRevert(
+            abi.encodeWithSelector(PayoutReceiver.WeatherFlagDamageMismatch.selector, uint256(0), uint256(10))
+        );
         pr.submitDetermination(d, sig);
     }
 
@@ -261,7 +293,9 @@ contract PayoutDeterminationTest is Test {
 
         vm.prank(relayer);
         // expected = satellite*100 = 4500; provided = 1800
-        vm.expectRevert(abi.encodeWithSelector(PayoutReceiver.InvalidWeightedDamage.selector, uint256(4500), uint256(1800)));
+        vm.expectRevert(
+            abi.encodeWithSelector(PayoutReceiver.InvalidWeightedDamage.selector, uint256(4500), uint256(1800))
+        );
         pr.submitDetermination(d, sig);
     }
 }

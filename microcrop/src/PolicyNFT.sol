@@ -50,11 +50,12 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
 
     /// @notice Coverage types matching PolicyManager
     enum CoverageType {
-        DROUGHT,        // 0
-        FLOOD,          // 1
-        BOTH,           // 2
-        EXCESS_RAIN,    // 3
-        COMPREHENSIVE   // 4
+        DROUGHT, // 0
+        FLOOD, // 1
+        BOTH, // 2
+        EXCESS_RAIN, // 3
+        COMPREHENSIVE // 4
+
     }
 
     // ============ Roles ============
@@ -108,10 +109,7 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
      * @param name_ Token name (e.g., "MicroCrop Insurance Certificate")
      * @param symbol_ Token symbol (e.g., "mcINS")
      */
-    constructor(
-        string memory name_,
-        string memory symbol_
-    ) ERC721(name_, symbol_) {
+    constructor(string memory name_, string memory symbol_) ERC721(name_, symbol_) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
     }
@@ -184,10 +182,7 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
      * @param policyId The policy ID to update
      * @param isActive New active status
      */
-    function updatePolicyStatus(
-        uint256 policyId,
-        bool isActive
-    ) external onlyRole(MINTER_ROLE) {
+    function updatePolicyStatus(uint256 policyId, bool isActive) external onlyRole(MINTER_ROLE) {
         uint256 tokenId = policyToToken[policyId];
         if (tokenId == 0) revert PolicyNotFound(policyId);
 
@@ -239,35 +234,35 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
         string memory svg = _generateSVG(cert);
         string memory json = _generateJSON(cert, svg);
 
-        return string(abi.encodePacked(
-            "data:application/json;base64,",
-            Base64.encode(bytes(json))
-        ));
+        return string(abi.encodePacked("data:application/json;base64,", Base64.encode(bytes(json))));
     }
 
     /**
      * @notice Generate SVG artwork for the policy certificate
      */
     function _generateSVG(PolicyCertificate memory cert) internal pure returns (string memory) {
-        string memory coverageStr = cert.coverageType == CoverageType.DROUGHT ? "Drought" :
-                                    cert.coverageType == CoverageType.FLOOD ? "Flood" : "Drought + Flood";
+        string memory coverageStr = cert.coverageType == CoverageType.DROUGHT
+            ? "Drought"
+            : cert.coverageType == CoverageType.FLOOD ? "Flood" : "Drought + Flood";
 
         string memory statusColor = cert.isActive ? "#22c55e" : "#6b7280";
         string memory statusText = cert.isActive ? "ACTIVE" : "INACTIVE";
 
-        return string(abi.encodePacked(
-            '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="500" viewBox="0 0 400 500">',
-            '<defs>',
-            '<linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">',
-            '<stop offset="0%" style="stop-color:#1e3a5f"/>',
-            '<stop offset="100%" style="stop-color:#0d1b2a"/>',
-            '</linearGradient>',
-            '</defs>',
-            '<rect width="400" height="500" fill="url(#bg)" rx="20"/>',
-            '<rect x="15" y="15" width="370" height="470" fill="none" stroke="#3b82f6" stroke-width="2" rx="15"/>',
-            _generateSVGContent(cert, coverageStr, statusColor, statusText),
-            '</svg>'
-        ));
+        return string(
+            abi.encodePacked(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="500" viewBox="0 0 400 500">',
+                "<defs>",
+                '<linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">',
+                '<stop offset="0%" style="stop-color:#1e3a5f"/>',
+                '<stop offset="100%" style="stop-color:#0d1b2a"/>',
+                "</linearGradient>",
+                "</defs>",
+                '<rect width="400" height="500" fill="url(#bg)" rx="20"/>',
+                '<rect x="15" y="15" width="370" height="470" fill="none" stroke="#3b82f6" stroke-width="2" rx="15"/>',
+                _generateSVGContent(cert, coverageStr, statusColor, statusText),
+                "</svg>"
+            )
+        );
     }
 
     function _generateSVGContent(
@@ -276,28 +271,44 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
         string memory statusColor,
         string memory statusText
     ) internal pure returns (string memory) {
-        return string(abi.encodePacked(
-            // Header
-            '<text x="200" y="50" font-family="Arial, sans-serif" font-size="24" fill="#ffffff" text-anchor="middle" font-weight="bold">MicroCrop Insurance</text>',
-            '<text x="200" y="75" font-family="Arial, sans-serif" font-size="14" fill="#94a3b8" text-anchor="middle">Policy Certificate</text>',
-            // Status badge
-            '<rect x="150" y="90" width="100" height="25" fill="', statusColor, '" rx="12"/>',
-            '<text x="200" y="108" font-family="Arial, sans-serif" font-size="12" fill="#ffffff" text-anchor="middle" font-weight="bold">', statusText, '</text>',
-            // Policy details
-            '<text x="30" y="150" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8">Policy ID</text>',
-            '<text x="30" y="170" font-family="Arial, sans-serif" font-size="16" fill="#ffffff">#', cert.policyId.toString(), '</text>',
-            '<text x="30" y="210" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8">Coverage Type</text>',
-            '<text x="30" y="230" font-family="Arial, sans-serif" font-size="16" fill="#ffffff">', coverageStr, '</text>',
-            '<text x="30" y="270" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8">Sum Insured</text>',
-            '<text x="30" y="290" font-family="Arial, sans-serif" font-size="16" fill="#22c55e">$', _formatUSDC(cert.sumInsured), '</text>',
-            '<text x="30" y="330" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8">Region</text>',
-            '<text x="30" y="350" font-family="Arial, sans-serif" font-size="16" fill="#ffffff">', _sanitizeSVG(cert.region), '</text>',
-            '<text x="30" y="390" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8">Distributor</text>',
-            '<text x="30" y="410" font-family="Arial, sans-serif" font-size="16" fill="#ffffff">', _sanitizeSVG(cert.distributorName), '</text>',
-            // Footer
-            '<line x1="30" y1="450" x2="370" y2="450" stroke="#3b82f6" stroke-width="1"/>',
-            '<text x="200" y="475" font-family="Arial, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">Powered by MicroCrop Protocol</text>'
-        ));
+        return string(
+            abi.encodePacked(
+                // Header
+                '<text x="200" y="50" font-family="Arial, sans-serif" font-size="24" fill="#ffffff" text-anchor="middle" font-weight="bold">MicroCrop Insurance</text>',
+                '<text x="200" y="75" font-family="Arial, sans-serif" font-size="14" fill="#94a3b8" text-anchor="middle">Policy Certificate</text>',
+                // Status badge
+                '<rect x="150" y="90" width="100" height="25" fill="',
+                statusColor,
+                '" rx="12"/>',
+                '<text x="200" y="108" font-family="Arial, sans-serif" font-size="12" fill="#ffffff" text-anchor="middle" font-weight="bold">',
+                statusText,
+                "</text>",
+                // Policy details
+                '<text x="30" y="150" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8">Policy ID</text>',
+                '<text x="30" y="170" font-family="Arial, sans-serif" font-size="16" fill="#ffffff">#',
+                cert.policyId.toString(),
+                "</text>",
+                '<text x="30" y="210" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8">Coverage Type</text>',
+                '<text x="30" y="230" font-family="Arial, sans-serif" font-size="16" fill="#ffffff">',
+                coverageStr,
+                "</text>",
+                '<text x="30" y="270" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8">Sum Insured</text>',
+                '<text x="30" y="290" font-family="Arial, sans-serif" font-size="16" fill="#22c55e">$',
+                _formatUSDC(cert.sumInsured),
+                "</text>",
+                '<text x="30" y="330" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8">Region</text>',
+                '<text x="30" y="350" font-family="Arial, sans-serif" font-size="16" fill="#ffffff">',
+                _sanitizeSVG(cert.region),
+                "</text>",
+                '<text x="30" y="390" font-family="Arial, sans-serif" font-size="12" fill="#94a3b8">Distributor</text>',
+                '<text x="30" y="410" font-family="Arial, sans-serif" font-size="16" fill="#ffffff">',
+                _sanitizeSVG(cert.distributorName),
+                "</text>",
+                // Footer
+                '<line x1="30" y1="450" x2="370" y2="450" stroke="#3b82f6" stroke-width="1"/>',
+                '<text x="200" y="475" font-family="Arial, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">Powered by MicroCrop Protocol</text>'
+            )
+        );
     }
 
     /**
@@ -353,27 +364,52 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
      * @notice Generate JSON metadata
      */
     function _generateJSON(PolicyCertificate memory cert, string memory svg) internal pure returns (string memory) {
-        string memory coverageStr = cert.coverageType == CoverageType.DROUGHT ? "Drought" :
-                                    cert.coverageType == CoverageType.FLOOD ? "Flood" : "Drought + Flood";
+        string memory coverageStr = cert.coverageType == CoverageType.DROUGHT
+            ? "Drought"
+            : cert.coverageType == CoverageType.FLOOD ? "Flood" : "Drought + Flood";
 
         string memory safeRegion = _sanitizeSVG(cert.region);
         string memory safeDistributor = _sanitizeSVG(cert.distributorName);
 
-        return string(abi.encodePacked(
-            '{"name":"MicroCrop Policy #', cert.policyId.toString(), '",',
-            '"description":"Insurance policy certificate for crop coverage in ', safeRegion, '",',
-            '"image":"data:image/svg+xml;base64,', Base64.encode(bytes(svg)), '",',
-            '"attributes":[',
-            '{"trait_type":"Policy ID","value":"', cert.policyId.toString(), '"},',
-            '{"trait_type":"Coverage Type","value":"', coverageStr, '"},',
-            '{"trait_type":"Sum Insured","value":"$', _formatUSDC(cert.sumInsured), '"},',
-            '{"trait_type":"Premium","value":"$', _formatUSDC(cert.premium), '"},',
-            '{"trait_type":"Region","value":"', safeRegion, '"},',
-            '{"trait_type":"Distributor","value":"', safeDistributor, '"},',
-            '{"trait_type":"Status","value":"', cert.isActive ? "Active" : "Inactive", '"},',
-            '{"trait_type":"Plot ID","value":"', cert.plotId.toString(), '"}',
-            ']}'
-        ));
+        return string(
+            abi.encodePacked(
+                '{"name":"MicroCrop Policy #',
+                cert.policyId.toString(),
+                '",',
+                '"description":"Insurance policy certificate for crop coverage in ',
+                safeRegion,
+                '",',
+                '"image":"data:image/svg+xml;base64,',
+                Base64.encode(bytes(svg)),
+                '",',
+                '"attributes":[',
+                '{"trait_type":"Policy ID","value":"',
+                cert.policyId.toString(),
+                '"},',
+                '{"trait_type":"Coverage Type","value":"',
+                coverageStr,
+                '"},',
+                '{"trait_type":"Sum Insured","value":"$',
+                _formatUSDC(cert.sumInsured),
+                '"},',
+                '{"trait_type":"Premium","value":"$',
+                _formatUSDC(cert.premium),
+                '"},',
+                '{"trait_type":"Region","value":"',
+                safeRegion,
+                '"},',
+                '{"trait_type":"Distributor","value":"',
+                safeDistributor,
+                '"},',
+                '{"trait_type":"Status","value":"',
+                cert.isActive ? "Active" : "Inactive",
+                '"},',
+                '{"trait_type":"Plot ID","value":"',
+                cert.plotId.toString(),
+                '"}',
+                "]}"
+            )
+        );
     }
 
     // ============ Transfer Restrictions ============
@@ -382,13 +418,13 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
      * @notice Override transfer to enforce soulbound behavior while active
      * @dev Transfers are only allowed after policy expires or is claimed
      */
-    function _update(
-        address to,
-        uint256 tokenId,
-        address auth
-    ) internal override(ERC721, ERC721Enumerable) returns (address) {
+    function _update(address to, uint256 tokenId, address auth)
+        internal
+        override(ERC721, ERC721Enumerable)
+        returns (address)
+    {
         address from = _ownerOf(tokenId);
-        
+
         // Allow minting (from == address(0)) and burning (to == address(0))
         // Block transfers while policy is active
         if (from != address(0) && to != address(0)) {

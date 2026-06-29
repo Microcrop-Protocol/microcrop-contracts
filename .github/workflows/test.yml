@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FOUNDRY_PROFILE: ci
+
+jobs:
+  check:
+    name: Foundry project
+    runs-on: ubuntu-latest
+    # The Foundry project lives in the microcrop/ subdirectory.
+    defaults:
+      run:
+        working-directory: microcrop
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Show Forge version
+        run: forge --version
+
+      - name: Forge fmt
+        run: forge fmt --check
+
+      - name: Forge build
+        run: forge build --sizes
+
+      # Excludes the mainnet-fork shadow run (PerOrgFork), which needs a live archive RPC.
+      - name: Forge tests
+        run: forge test -vvv --no-match-path "test/PerOrgFork.t.sol"

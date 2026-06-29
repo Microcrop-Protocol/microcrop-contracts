@@ -42,10 +42,7 @@ contract UpgradePolicyManager is Script {
         console.log("PolicyManager upgraded");
 
         // 3. Deploy new PolicyNFT (non-upgradeable, has updated CoverageType enum)
-        PolicyNFT newPolicyNFT = new PolicyNFT(
-            "MicroCrop Insurance Certificate",
-            "mcINS"
-        );
+        PolicyNFT newPolicyNFT = new PolicyNFT("MicroCrop Insurance Certificate", "mcINS");
         console.log("New PolicyNFT:", address(newPolicyNFT));
 
         // 4. Set new PolicyNFT on PolicyManager
@@ -53,10 +50,7 @@ contract UpgradePolicyManager is Script {
         console.log("PolicyNFT set on PolicyManager");
 
         // 5. Grant MINTER_ROLE to PolicyManager on new PolicyNFT
-        newPolicyNFT.grantRole(
-            newPolicyNFT.MINTER_ROLE(),
-            POLICY_MANAGER_PROXY
-        );
+        newPolicyNFT.grantRole(newPolicyNFT.MINTER_ROLE(), POLICY_MANAGER_PROXY);
         console.log("MINTER_ROLE granted to PolicyManager");
 
         // 6. Grant BACKEND_ROLE to deployer (msg.sender) on PolicyManager

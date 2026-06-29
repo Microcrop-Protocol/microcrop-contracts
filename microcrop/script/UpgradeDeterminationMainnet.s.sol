@@ -57,10 +57,7 @@ contract UpgradeDeterminationMainnet is Script {
 
         PayoutReceiver pr = PayoutReceiver(PAYOUT_RECEIVER_PROXY);
         pr.upgradeToAndCall(address(prImpl), "");
-        require(
-            keccak256(bytes(pr.version())) == keccak256(bytes("2.0.0")),
-            "PayoutReceiver upgrade did not take"
-        );
+        require(keccak256(bytes(pr.version())) == keccak256(bytes("2.0.0")), "PayoutReceiver upgrade did not take");
 
         pr.setAuthorizedSigner(authorizedSigner);
         if (!pr.hasRole(pr.RELAYER_ROLE(), relayerWallet)) {

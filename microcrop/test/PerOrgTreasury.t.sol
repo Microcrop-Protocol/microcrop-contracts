@@ -26,7 +26,8 @@ contract PerOrgTreasuryTest is BaseTest {
 
     function _activePolicy() internal returns (uint256 policyId) {
         vm.startPrank(backend);
-        policyId = policyManager.createPolicy(farmer, 1, SUM_INSURED, PREMIUM, 30, PolicyManager.CoverageType.DROUGHT, ORG);
+        policyId =
+            policyManager.createPolicy(farmer, 1, SUM_INSURED, PREMIUM, 30, PolicyManager.CoverageType.DROUGHT, ORG);
         policyManager.activatePolicy(policyId, distributor, DISTRIBUTOR_NAME, REGION);
         vm.stopPrank();
     }
