@@ -82,14 +82,8 @@ contract UpgradeBatchC is Script {
         );
 
         // ── Role survival: the upgrades must not disturb cross-contract grants ──
-        require(
-            IRoleView(treasuryProxy).hasRole(PAYOUT_ROLE, prProxy),
-            "PayoutReceiver lost PAYOUT_ROLE on Treasury"
-        );
-        require(
-            IRoleView(pmProxy).hasRole(ORACLE_ROLE, prProxy),
-            "PayoutReceiver lost ORACLE_ROLE on PolicyManager"
-        );
+        require(IRoleView(treasuryProxy).hasRole(PAYOUT_ROLE, prProxy), "PayoutReceiver lost PAYOUT_ROLE on Treasury");
+        require(IRoleView(pmProxy).hasRole(ORACLE_ROLE, prProxy), "PayoutReceiver lost ORACLE_ROLE on PolicyManager");
 
         vm.stopBroadcast();
 
@@ -98,11 +92,7 @@ contract UpgradeBatchC is Script {
         console.log("activatePolicy is now pool-free; remove the backend factory binding next.");
     }
 
-    function _resolve()
-        internal
-        view
-        returns (address pm, address treasury, address pr, string memory net)
-    {
+    function _resolve() internal view returns (address pm, address treasury, address pr, string memory net) {
         if (block.chainid == 8453) return (PM_MAINNET, TREASURY_MAINNET, PR_MAINNET, "Base Mainnet (8453)");
         if (block.chainid == 84532) return (PM_SEPOLIA, TREASURY_SEPOLIA, PR_SEPOLIA, "Base Sepolia (84532)");
         revert("Unsupported chain - use base_mainnet (8453) or base_sepolia (84532)");

@@ -10,7 +10,7 @@ import {PolicyNFT} from "./PolicyNFT.sol";
 /**
  * @title PolicyManager
  * @notice Manages the complete lifecycle of parametric crop insurance policies
- * @dev UUPS upgradeable proxy implementation. Handles policy creation, activation, 
+ * @dev UUPS upgradeable proxy implementation. Handles policy creation, activation,
  *      and claims tracking with comprehensive access control and validation.
  *      Mints NFT certificates to farmers when policies are activated.
  *
@@ -28,12 +28,7 @@ import {PolicyNFT} from "./PolicyNFT.sol";
  * - ORACLE_ROLE: Can mark policies as claimed (PayoutReceiver only)
  * - UPGRADER_ROLE: Can authorize contract upgrades
  */
-contract PolicyManager is
-    Initializable,
-    AccessControlUpgradeable,
-    ReentrancyGuard,
-    UUPSUpgradeable
-{
+contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGuard, UUPSUpgradeable {
     // ============ Type Declarations ============
 
     /**
@@ -42,11 +37,12 @@ contract PolicyManager is
      *      BOTH covers both types of events
      */
     enum CoverageType {
-        DROUGHT,        // 0
-        FLOOD,          // 1
-        BOTH,           // 2
-        EXCESS_RAIN,    // 3
-        COMPREHENSIVE   // 4
+        DROUGHT, // 0
+        FLOOD, // 1
+        BOTH, // 2
+        EXCESS_RAIN, // 3
+        COMPREHENSIVE // 4
+
     }
 
     /**
@@ -240,11 +236,7 @@ contract PolicyManager is
      * @param year The year for which the claim count was incremented
      * @param newCount The new total claim count for that year
      */
-    event ClaimCountIncremented(
-        address indexed farmer,
-        uint256 indexed year,
-        uint256 newCount
-    );
+    event ClaimCountIncremented(address indexed farmer, uint256 indexed year, uint256 newCount);
 
     // ============ Custom Errors ============
 
@@ -421,11 +413,7 @@ contract PolicyManager is
         // policies cannot accumulate without bound (Finding 5).
         uint256 currentOpenPolicies = _farmerActiveCounts[farmer] + _farmerPendingCounts[farmer];
         if (currentOpenPolicies >= MAX_ACTIVE_POLICIES_PER_FARMER) {
-            revert TooManyActivePolicies(
-                farmer,
-                currentOpenPolicies,
-                MAX_ACTIVE_POLICIES_PER_FARMER
-            );
+            revert TooManyActivePolicies(farmer, currentOpenPolicies, MAX_ACTIVE_POLICIES_PER_FARMER);
         }
 
         // Generate unique policy ID (overflow protected)
@@ -459,16 +447,7 @@ contract PolicyManager is
         }
 
         // Emit event
-        emit PolicyCreated(
-            policyId,
-            farmer,
-            plotId,
-            sumInsured,
-            premium,
-            startDate,
-            endDate,
-            coverageType
-        );
+        emit PolicyCreated(policyId, farmer, plotId, sumInsured, premium, startDate, endDate, coverageType);
 
         return policyId;
     }
@@ -489,11 +468,7 @@ contract PolicyManager is
         address distributor,
         string calldata distributorName,
         string calldata region
-    )
-        external
-        onlyRole(BACKEND_ROLE)
-        nonReentrant
-    {
+    ) external onlyRole(BACKEND_ROLE) nonReentrant {
         // Check PolicyNFT is set
         if (address(policyNFT) == address(0)) {
             revert PolicyNFTNotSet();
@@ -513,21 +488,13 @@ contract PolicyManager is
 
         // Check policy is pending
         if (policy.status != PolicyStatus.PENDING) {
-            revert InvalidPolicyStatus(
-                policyId,
-                policy.status,
-                PolicyStatus.PENDING
-            );
+            revert InvalidPolicyStatus(policyId, policy.status, PolicyStatus.PENDING);
         }
 
         // Enforce active policy limit at activation time
         uint256 currentActive = _farmerActiveCounts[policy.farmer];
         if (currentActive >= MAX_ACTIVE_POLICIES_PER_FARMER) {
-            revert TooManyActivePolicies(
-                policy.farmer,
-                currentActive,
-                MAX_ACTIVE_POLICIES_PER_FARMER
-            );
+            revert TooManyActivePolicies(policy.farmer, currentActive, MAX_ACTIVE_POLICIES_PER_FARMER);
         }
 
         // Activate the policy — reset coverage period to start now
@@ -586,11 +553,7 @@ contract PolicyManager is
 
         // Check policy is active
         if (policy.status != PolicyStatus.ACTIVE) {
-            revert InvalidPolicyStatus(
-                policyId,
-                policy.status,
-                PolicyStatus.ACTIVE
-            );
+            revert InvalidPolicyStatus(policyId, policy.status, PolicyStatus.ACTIVE);
         }
 
         // Check policy has not expired
@@ -638,12 +601,7 @@ contract PolicyManager is
 
         // Check claim limit
         if (newCount > MAX_CLAIMS_PER_FARMER_PER_YEAR) {
-            revert TooManyClaimsThisYear(
-                farmer,
-                currentYear,
-                currentCount,
-                MAX_CLAIMS_PER_FARMER_PER_YEAR
-            );
+            revert TooManyClaimsThisYear(farmer, currentYear, currentCount, MAX_CLAIMS_PER_FARMER_PER_YEAR);
         }
 
         // Update count
@@ -659,11 +617,7 @@ contract PolicyManager is
      *
      * @param policyId The unique identifier of the policy to cancel
      */
-    function cancelPolicy(uint256 policyId)
-        external
-        onlyRole(BACKEND_ROLE)
-        nonReentrant
-    {
+    function cancelPolicy(uint256 policyId) external onlyRole(BACKEND_ROLE) nonReentrant {
         Policy storage policy = _policies[policyId];
 
         // Check policy exists
@@ -672,10 +626,7 @@ contract PolicyManager is
         }
 
         // Can only cancel PENDING or ACTIVE policies
-        if (
-            policy.status != PolicyStatus.PENDING &&
-            policy.status != PolicyStatus.ACTIVE
-        ) {
+        if (policy.status != PolicyStatus.PENDING && policy.status != PolicyStatus.ACTIVE) {
             revert InvalidPolicyStatus(
                 policyId,
                 policy.status,
@@ -718,11 +669,7 @@ contract PolicyManager is
      *
      * @param policyId The unique identifier of the policy to expire
      */
-    function expirePolicy(uint256 policyId)
-        external
-        onlyRole(BACKEND_ROLE)
-        nonReentrant
-    {
+    function expirePolicy(uint256 policyId) external onlyRole(BACKEND_ROLE) nonReentrant {
         Policy storage policy = _policies[policyId];
 
         if (policy.id == 0) {
@@ -730,11 +677,7 @@ contract PolicyManager is
         }
 
         if (policy.status != PolicyStatus.ACTIVE) {
-            revert InvalidPolicyStatus(
-                policyId,
-                policy.status,
-                PolicyStatus.ACTIVE
-            );
+            revert InvalidPolicyStatus(policyId, policy.status, PolicyStatus.ACTIVE);
         }
 
         // Must actually be past end date
@@ -784,11 +727,7 @@ contract PolicyManager is
      * @param farmer The address of the farmer
      * @return policyIds Array of policy IDs belonging to the farmer
      */
-    function getFarmerPolicies(address farmer)
-        external
-        view
-        returns (uint256[] memory policyIds)
-    {
+    function getFarmerPolicies(address farmer) external view returns (uint256[] memory policyIds) {
         return _farmerPolicies[farmer];
     }
 
@@ -807,11 +746,7 @@ contract PolicyManager is
      * @param year The year to check (timestamp / 365 days)
      * @return count The number of claims made in that year
      */
-    function getFarmerClaimCount(address farmer, uint256 year)
-        external
-        view
-        returns (uint256 count)
-    {
+    function getFarmerClaimCount(address farmer, uint256 year) external view returns (uint256 count) {
         return _farmerClaimCounts[farmer][year];
     }
 
@@ -832,11 +767,7 @@ contract PolicyManager is
      */
     function isPolicyActive(uint256 policyId) external view returns (bool isActive) {
         Policy storage policy = _policies[policyId];
-        return (
-            policy.id != 0 &&
-            policy.status == PolicyStatus.ACTIVE &&
-            block.timestamp <= policy.endDate
-        );
+        return (policy.id != 0 && policy.status == PolicyStatus.ACTIVE && block.timestamp <= policy.endDate);
     }
 
     /**

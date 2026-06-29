@@ -156,16 +156,32 @@ contract PerOrgForkTest is Test {
     function _preimage(PayoutReceiver.CropDetermination memory d) internal view returns (bytes32) {
         bytes32 inputsHash = keccak256(
             abi.encode(
-                d.onChainPolicyId, d.latitude_e6, d.longitude_e6, d.sumInsured, d.ndviScaled,
-                d.weatherPresent, d.weatherTempC_e2, d.weatherPrecip_e2, d.weatherHumidity, d.weatherWind_e2
+                d.onChainPolicyId,
+                d.latitude_e6,
+                d.longitude_e6,
+                d.sumInsured,
+                d.ndviScaled,
+                d.weatherPresent,
+                d.weatherTempC_e2,
+                d.weatherPrecip_e2,
+                d.weatherHumidity,
+                d.weatherWind_e2
             )
         );
         return keccak256(
             abi.encodePacked(
-                keccak256("1.0"), keccak256("CROP_DAMAGE"), keccak256("crop-dualindex-1.0"),
-                block.chainid, PAYOUT_RECEIVER, inputsHash,
-                d.onChainPolicyId, d.damagePercentBp, d.weatherDamage, d.satelliteDamage,
-                d.payoutAmount, d.assessedAt
+                keccak256("1.0"),
+                keccak256("CROP_DAMAGE"),
+                keccak256("crop-dualindex-1.0"),
+                block.chainid,
+                PAYOUT_RECEIVER,
+                inputsHash,
+                d.onChainPolicyId,
+                d.damagePercentBp,
+                d.weatherDamage,
+                d.satelliteDamage,
+                d.payoutAmount,
+                d.assessedAt
             )
         );
     }

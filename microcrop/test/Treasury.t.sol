@@ -28,11 +28,7 @@ contract TreasuryTest is Test {
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
 
     event PremiumReceived(
-        uint256 indexed policyId,
-        uint256 grossAmount,
-        uint256 platformFee,
-        uint256 netAmount,
-        address indexed from
+        uint256 indexed policyId, uint256 grossAmount, uint256 platformFee, uint256 netAmount, address indexed from
     );
     event PayoutSent(uint256 indexed policyId, uint256 amount, address indexed recipient);
     event PlatformFeeUpdated(uint256 oldFee, uint256 newFee);
@@ -41,12 +37,8 @@ contract TreasuryTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         treasuryImpl = new Treasury();
-        bytes memory initData = abi.encodeWithSelector(
-            Treasury.initialize.selector,
-            address(usdc),
-            backendWallet,
-            admin
-        );
+        bytes memory initData =
+            abi.encodeWithSelector(Treasury.initialize.selector, address(usdc), backendWallet, admin);
         ERC1967Proxy proxy = new ERC1967Proxy(address(treasuryImpl), initData);
         treasury = Treasury(address(proxy));
 

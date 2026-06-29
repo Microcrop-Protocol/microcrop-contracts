@@ -56,42 +56,31 @@ abstract contract BaseTest is Test {
 
         // Deploy Treasury implementation and proxy
         treasuryImpl = new Treasury();
-        bytes memory treasuryInitData = abi.encodeWithSelector(
-            Treasury.initialize.selector,
-            address(usdc),
-            backendWallet,
-            admin
-        );
+        bytes memory treasuryInitData =
+            abi.encodeWithSelector(Treasury.initialize.selector, address(usdc), backendWallet, admin);
         treasuryProxy = new ERC1967Proxy(address(treasuryImpl), treasuryInitData);
         treasury = Treasury(address(treasuryProxy));
 
         // Deploy PolicyManager implementation and proxy
         policyManagerImpl = new PolicyManager();
-        bytes memory policyManagerInitData = abi.encodeWithSelector(
-            PolicyManager.initialize.selector,
-            admin
-        );
+        bytes memory policyManagerInitData = abi.encodeWithSelector(PolicyManager.initialize.selector, admin);
         policyManagerProxy = new ERC1967Proxy(address(policyManagerImpl), policyManagerInitData);
         policyManager = PolicyManager(address(policyManagerProxy));
 
         // Deploy PayoutReceiver implementation and proxy
         payoutReceiverImpl = new PayoutReceiver();
-        bytes memory payoutReceiverInitData = abi.encodeWithSelector(
-            PayoutReceiver.initialize.selector,
-            address(treasury),
-            address(policyManager),
-            admin
-        );
+        bytes memory payoutReceiverInitData =
+            abi.encodeWithSelector(PayoutReceiver.initialize.selector, address(treasury), address(policyManager), admin);
         payoutReceiverProxy = new ERC1967Proxy(address(payoutReceiverImpl), payoutReceiverInitData);
         payoutReceiver = PayoutReceiver(address(payoutReceiverProxy));
 
         // Grant cross-contract roles
         treasury.grantRole(treasury.BACKEND_ROLE(), backend);
         treasury.grantRole(treasury.PAYOUT_ROLE(), address(payoutReceiver));
-        
+
         policyManager.grantRole(policyManager.BACKEND_ROLE(), backend);
         policyManager.grantRole(policyManager.ORACLE_ROLE(), address(payoutReceiver));
-        
+
         // Set PolicyNFT on PolicyManager
         policyManager.setPolicyNFT(address(policyNFT));
         policyNFT.grantRole(policyNFT.MINTER_ROLE(), address(policyManager));

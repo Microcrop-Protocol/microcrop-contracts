@@ -18,7 +18,7 @@ interface IPolicyManagerOrg {
 /**
  * @title Treasury
  * @notice Holds USDC reserves, collects premiums, and disburses payouts for the MicroCrop insurance platform
- * @dev UUPS upgradeable proxy implementation. Implements comprehensive reserve management to ensure 
+ * @dev UUPS upgradeable proxy implementation. Implements comprehensive reserve management to ensure
  *      sufficient funds for payouts. Uses SafeERC20 for all token transfers.
  *
  * Security Considerations:
@@ -36,13 +36,7 @@ interface IPolicyManagerOrg {
  * - PAYOUT_ROLE: Can request payouts (PayoutReceiver contract only)
  * - UPGRADER_ROLE: Can authorize contract upgrades
  */
-contract Treasury is
-    Initializable,
-    AccessControlUpgradeable,
-    ReentrancyGuard,
-    PausableUpgradeable,
-    UUPSUpgradeable
-{
+contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, PausableUpgradeable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
     // ============ Constants ============
@@ -154,11 +148,7 @@ contract Treasury is
      * @param from The address that paid the premium
      */
     event PremiumReceived(
-        uint256 indexed policyId,
-        uint256 grossAmount,
-        uint256 platformFee,
-        uint256 netAmount,
-        address indexed from
+        uint256 indexed policyId, uint256 grossAmount, uint256 platformFee, uint256 netAmount, address indexed from
     );
 
     /**
@@ -167,11 +157,7 @@ contract Treasury is
      * @param amount The payout amount
      * @param recipient The recipient of the payout
      */
-    event PayoutSent(
-        uint256 indexed policyId,
-        uint256 amount,
-        address indexed recipient
-    );
+    event PayoutSent(uint256 indexed policyId, uint256 amount, address indexed recipient);
 
     /**
      * @notice Emitted when the platform fee is updated
@@ -273,11 +259,7 @@ contract Treasury is
      * @param _backendWallet Address of the backend wallet for payouts
      * @param _admin Address to receive admin roles
      */
-    function initialize(
-        address _usdc,
-        address _backendWallet,
-        address _admin
-    ) external initializer {
+    function initialize(address _usdc, address _backendWallet, address _admin) external initializer {
         if (_usdc == address(0)) revert ZeroAddress();
         if (_backendWallet == address(0)) revert ZeroAddress();
         if (_admin == address(0)) revert ZeroAddress();
@@ -319,10 +301,12 @@ contract Treasury is
      * @param policyId The unique identifier of the policy
      * @param amount The gross premium amount in USDC (6 decimals)
      */
-    function receivePremium(
-        uint256 policyId,
-        uint256 amount
-    ) external onlyRole(BACKEND_ROLE) nonReentrant whenNotPaused {
+    function receivePremium(uint256 policyId, uint256 amount)
+        external
+        onlyRole(BACKEND_ROLE)
+        nonReentrant
+        whenNotPaused
+    {
         // Validate inputs
         if (amount == 0) revert ZeroAmount();
         if (premiumReceived[policyId]) revert PremiumAlreadyReceived(policyId);
@@ -362,10 +346,12 @@ contract Treasury is
      * @param policyId The unique identifier of the policy
      * @param amount The payout amount in USDC (6 decimals)
      */
-    function requestPayout(
-        uint256 policyId,
-        uint256 amount
-    ) external onlyRole(PAYOUT_ROLE) nonReentrant whenNotPaused {
+    function requestPayout(uint256 policyId, uint256 amount)
+        external
+        onlyRole(PAYOUT_ROLE)
+        nonReentrant
+        whenNotPaused
+    {
         // Validate inputs
         if (amount == 0) revert ZeroAmount();
         if (payoutProcessed[policyId]) revert PayoutAlreadyProcessed(policyId);
@@ -555,10 +541,12 @@ contract Treasury is
      * @param recipient The address to receive the funds
      * @param amount The amount to withdraw
      */
-    function emergencyWithdraw(
-        address recipient,
-        uint256 amount
-    ) external onlyRole(ADMIN_ROLE) nonReentrant whenPaused {
+    function emergencyWithdraw(address recipient, uint256 amount)
+        external
+        onlyRole(ADMIN_ROLE)
+        nonReentrant
+        whenPaused
+    {
         if (recipient == address(0)) revert ZeroAddress();
 
         // Only UNBACKED surplus may be recovered (e.g. tokens sent here by mistake) — never

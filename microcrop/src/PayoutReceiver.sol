@@ -79,18 +79,18 @@ contract PayoutReceiver is
     struct CropDetermination {
         // --- settlement preimage (result/subject) ---
         uint256 onChainPolicyId;
-        uint256 damagePercentBp;     // basis points 0..10000
-        uint256 weatherDamage;       // whole percent 0..100
-        uint256 satelliteDamage;     // whole percent 0..100
-        uint256 payoutAmount;        // USDC base units (6 dp)
-        uint256 assessedAt;          // unix seconds
+        uint256 damagePercentBp; // basis points 0..10000
+        uint256 weatherDamage; // whole percent 0..100
+        uint256 satelliteDamage; // whole percent 0..100
+        uint256 payoutAmount; // USDC base units (6 dp)
+        uint256 assessedAt; // unix seconds
         // --- evidence (inputsHash) ---
-        int256  latitude_e6;
-        int256  longitude_e6;
-        uint256 sumInsured;          // must equal policy.sumInsured
-        int256  ndviScaled;
-        uint256 weatherPresent;      // 0 | 1
-        int256  weatherTempC_e2;
+        int256 latitude_e6;
+        int256 longitude_e6;
+        uint256 sumInsured; // must equal policy.sumInsured
+        int256 ndviScaled;
+        uint256 weatherPresent; // 0 | 1
+        int256 weatherTempC_e2;
         uint256 weatherPrecip_e2;
         uint256 weatherHumidity;
         uint256 weatherWind_e2;
@@ -189,10 +189,7 @@ contract PayoutReceiver is
      * @param farmer The farmer receiving the payout
      */
     event DamageReportReceived(
-        uint256 indexed policyId,
-        uint256 damagePercentage,
-        uint256 payoutAmount,
-        address indexed farmer
+        uint256 indexed policyId, uint256 damagePercentage, uint256 payoutAmount, address indexed farmer
     );
 
     /**
@@ -318,11 +315,7 @@ contract PayoutReceiver is
      * @param _policyManager Address of the PolicyManager contract
      * @param _admin Address to receive admin roles
      */
-    function initialize(
-        address _treasury,
-        address _policyManager,
-        address _admin
-    ) external initializer {
+    function initialize(address _treasury, address _policyManager, address _admin) external initializer {
         if (_treasury == address(0)) revert ZeroAddress();
         if (_policyManager == address(0)) revert ZeroAddress();
         if (_admin == address(0)) revert ZeroAddress();

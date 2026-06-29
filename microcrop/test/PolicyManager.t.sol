@@ -70,7 +70,15 @@ contract PolicyManagerTest is BaseTest {
         // The (max+1)-th creation must revert even though zero policies are ACTIVE.
         vm.prank(backend);
         vm.expectRevert(abi.encodeWithSelector(PolicyManager.TooManyActivePolicies.selector, farmer, max, max));
-        policyManager.createPolicy(farmer, VALID_PLOT_ID, VALID_SUM_INSURED, VALID_PREMIUM, VALID_DURATION, PolicyManager.CoverageType.BOTH, ORG);
+        policyManager.createPolicy(
+            farmer,
+            VALID_PLOT_ID,
+            VALID_SUM_INSURED,
+            VALID_PREMIUM,
+            VALID_DURATION,
+            PolicyManager.CoverageType.BOTH,
+            ORG
+        );
     }
 
     /// @notice Cancelling a PENDING policy frees its open-policy slot.
@@ -83,7 +91,15 @@ contract PolicyManagerTest is BaseTest {
         // At cap (all PENDING) — next create reverts.
         vm.prank(backend);
         vm.expectRevert(abi.encodeWithSelector(PolicyManager.TooManyActivePolicies.selector, farmer, max, max));
-        policyManager.createPolicy(farmer, VALID_PLOT_ID, VALID_SUM_INSURED, VALID_PREMIUM, VALID_DURATION, PolicyManager.CoverageType.BOTH, ORG);
+        policyManager.createPolicy(
+            farmer,
+            VALID_PLOT_ID,
+            VALID_SUM_INSURED,
+            VALID_PREMIUM,
+            VALID_DURATION,
+            PolicyManager.CoverageType.BOTH,
+            ORG
+        );
 
         // Cancel one PENDING policy → a slot frees up → create succeeds.
         vm.prank(backend);
@@ -116,7 +132,7 @@ contract PolicyManagerTest is BaseTest {
         );
 
         assertEq(policyId, 1);
-        
+
         PolicyManager.Policy memory policy = policyManager.getPolicy(policyId);
         assertEq(policy.farmer, farmer);
         assertEq(policy.sumInsured, VALID_SUM_INSURED);
@@ -204,13 +220,13 @@ contract PolicyManagerTest is BaseTest {
     function test_MarkAsClaimed_UpdatesNFTStatus() public {
         uint256 policyId = _createAndActivatePolicy(farmer);
 
-        (, , , , , , , , , , , bool isActiveBefore) = policyNFT.certificates(policyId);
+        (,,,,,,,,,,, bool isActiveBefore) = policyNFT.certificates(policyId);
         assertTrue(isActiveBefore);
 
         vm.prank(address(payoutReceiver));
         policyManager.markAsClaimed(policyId);
 
-        (, , , , , , , , , , , bool isActiveAfter) = policyNFT.certificates(policyId);
+        (,,,,,,,,,,, bool isActiveAfter) = policyNFT.certificates(policyId);
         assertFalse(isActiveAfter);
     }
 
@@ -232,7 +248,7 @@ contract PolicyManagerTest is BaseTest {
         vm.prank(backend);
         policyManager.cancelPolicy(policyId);
 
-        (, , , , , , , , , , , bool isActive) = policyNFT.certificates(policyId);
+        (,,,,,,,,,,, bool isActive) = policyNFT.certificates(policyId);
         assertFalse(isActive);
     }
 
