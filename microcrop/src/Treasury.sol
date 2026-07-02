@@ -93,6 +93,8 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     uint256 public totalPremiums;
 
     /// @notice High-water mark of net premiums for reserve calculation (never decremented)
+    /// @dev DEPRECATED: retained for storage-layout compatibility; no longer updated
+    ///      (was an unused v1 high-water mark).
     uint256 public peakPremiums;
 
     /// @notice Lifetime total payouts disbursed
@@ -205,6 +207,9 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     event OrgReserveDeposited(address indexed org, address indexed from, uint256 amount);
     /// @notice Emitted when an org's reserve is debited for a payout.
     event OrgReserveDebited(address indexed org, uint256 indexed policyId, uint256 amount);
+    /// @notice Emitted (non-reverting) when, after a payout, an org's remaining reserve falls below
+    ///         its required reserve — a solvency alert for the backend/platform admin.
+    event ReserveBelowRequirement(address indexed org, uint256 remaining, uint256 required);
     /// @notice Emitted when an org withdraws surplus reserve.
     event OrgSurplusWithdrawn(address indexed org, address indexed to, uint256 amount);
     /// @notice Emitted when the platform admin sets an org's reserve ratio.
@@ -343,7 +348,6 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
         premiumReceived[policyId] = true;
         accumulatedFees += platformFee;
         totalPremiums += netPremium;
-        peakPremiums += netPremium;
         // Credit the org's own reserve — this is the pool that backs its payouts.
         orgReserve[org] += netPremium;
         totalOrgReserves += netPremium;
@@ -405,6 +409,14 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
 
         emit PayoutSent(policyId, amount, backendWallet);
         emit OrgReserveDebited(org, policyId, amount);
+
+        // Solvency signal (non-reverting): a cascade of otherwise-valid payouts can drain an org
+        // below its required reserve. We never block a valid payout — the farmer is owed money —
+        // but we surface it so the backend/platform admin can alert the org to top up.
+        uint256 required = reserveRequired(org);
+        if (orgReserve[org] < required) {
+            emit ReserveBelowRequirement(org, orgReserve[org], required);
+        }
     }
 
     // ============ Per-org treasury (v3) ============
@@ -607,9 +619,23 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
      * @notice Calculates the platform fee for a given premium amount
      * @param premium The gross premium amount
      * @return fee The platform fee amount
+     * @dev DEPRECATED: returns the global rate only; use calculatePlatformFee(premium, org) for the
+     *      actual per-org fee. This diverges from receivePremium, which charges the per-org rate.
      */
     function calculatePlatformFee(uint256 premium) public view returns (uint256 fee) {
         return (premium * platformFeePercent) / BASIS_POINTS;
+    }
+
+    /**
+     * @notice Calculates the actual platform fee charged for a premium on a given org's policy.
+     * @dev Mirrors receivePremium exactly: (premium * _feeBps(org)) / BPS_DENOMINATOR. Honors an
+     *      explicit per-org fee (including 0 bps) and otherwise falls back to the global rate.
+     * @param premium The gross premium amount
+     * @param org The backing org whose fee rate applies
+     * @return fee The platform fee amount
+     */
+    function calculatePlatformFee(uint256 premium, address org) public view returns (uint256 fee) {
+        return (premium * _feeBps(org)) / BPS_DENOMINATOR;
     }
 
     /**
@@ -623,6 +649,8 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     /**
      * @notice Calculates the amount available for payouts after reserve
      * @return available The amount available for payouts
+     * @dev DEPRECATED (v3): global pooled model; does not reflect per-org solvency. Use the
+     *      per-org views below.
      */
     function getAvailableForPayouts() public view returns (uint256 available) {
         uint256 balance = usdc.balanceOf(address(this));
@@ -636,8 +664,20 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     }
 
     /**
+     * @notice The amount available to fund payouts for a specific org (v3 per-org model).
+     * @dev A payout is funded solely from the org's own reserve; this returns that balance.
+     * @param org The org whose reserve to read
+     * @return available The org's current reserve balance
+     */
+    function getAvailableForPayouts(address org) external view returns (uint256 available) {
+        return orgReserve[org];
+    }
+
+    /**
      * @notice Checks if the treasury meets minimum reserve requirements
      * @return meetsReserve True if reserve requirements are met
+     * @dev DEPRECATED (v3): global pooled model; does not reflect per-org solvency. Use the
+     *      per-org views below.
      */
     function meetsReserveRequirements() public view returns (bool meetsReserve) {
         uint256 balance = usdc.balanceOf(address(this));
@@ -647,8 +687,19 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     }
 
     /**
+     * @notice Checks if an org meets its required reserve (v3 per-org model).
+     * @param org The org to check
+     * @return meetsReserve True if the org's reserve covers its required reserve
+     */
+    function meetsReserveRequirements(address org) external view returns (bool meetsReserve) {
+        return orgReserve[org] >= reserveRequired(org);
+    }
+
+    /**
      * @notice Returns the required minimum reserve amount
      * @return required The minimum reserve amount required
+     * @dev DEPRECATED (v3): global pooled model; does not reflect per-org solvency. Use the
+     *      per-org views below.
      */
     function getRequiredReserve() external view returns (uint256 required) {
         uint256 outstandingPremiums = totalPremiums > totalPayouts ? totalPremiums - totalPayouts : 0;
@@ -658,6 +709,8 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     /**
      * @notice Returns the current reserve ratio as a percentage
      * @return ratio The current reserve ratio (0-100+)
+     * @dev DEPRECATED (v3): global pooled model; does not reflect per-org solvency. Use the
+     *      per-org views below.
      */
     function getReserveRatio() external view returns (uint256 ratio) {
         uint256 outstandingPremiums = totalPremiums > totalPayouts ? totalPremiums - totalPayouts : 0;

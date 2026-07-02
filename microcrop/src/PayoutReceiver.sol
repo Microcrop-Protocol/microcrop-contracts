@@ -269,6 +269,10 @@ contract PayoutReceiver is
     /// @notice Thrown when damage report is too old
     error ReportTooOld(uint256 assessedAt, uint256 currentTime, uint256 maxAge);
 
+    /// @notice Thrown when a damage report is future-dated (assessedAt > block.timestamp).
+    /// @dev Distinct from ReportTooOld so relayers can tell clock drift from genuine expiry.
+    error ReportInFuture(uint256 assessedAt, uint256 currentTime);
+
     /// @notice Thrown when farmer has exceeded yearly claim limit
     error FarmerClaimLimitExceeded(address farmer);
 
@@ -433,9 +437,9 @@ contract PayoutReceiver is
             revert InvalidPayoutCalculation(d.payoutAmount, expectedPayout);
         }
 
-        // 8. freshness
+        // 8. freshness: future-dated and stale are distinct failure modes.
         if (d.assessedAt > block.timestamp) {
-            revert ReportTooOld(d.assessedAt, block.timestamp, MAX_REPORT_AGE);
+            revert ReportInFuture(d.assessedAt, block.timestamp);
         }
         if (block.timestamp > d.assessedAt + MAX_REPORT_AGE) {
             revert ReportTooOld(d.assessedAt, block.timestamp, MAX_REPORT_AGE);

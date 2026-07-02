@@ -289,6 +289,9 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
     /// @notice Thrown when policy has expired
     error PolicyExpired(uint256 policyId, uint256 endDate, uint256 currentTime);
 
+    /// @notice Thrown when expiring a policy whose end date has not yet passed
+    error PolicyNotYetExpired(uint256 policyId, uint256 endDate, uint256 currentTime);
+
     /// @notice Thrown when a zero address is provided
     error ZeroAddress();
 
@@ -366,6 +369,7 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
      */
     function setLegacyPolicyOrg(uint256 policyId, address org) external onlyRole(ADMIN_ROLE) {
         if (org == address(0)) revert ZeroAddressOrg();
+        if (_policies[policyId].id == 0) revert PolicyDoesNotExist(policyId);
         if (_policyOrg[policyId] != address(0)) revert OrgAlreadySet(policyId);
         _policyOrg[policyId] = org;
         // ACTIVE legacy coverage must count toward the org's outstanding exposure.
@@ -727,7 +731,7 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
 
         // Must actually be past end date
         if (block.timestamp <= policy.endDate) {
-            revert InvalidDuration(0, 0, 0);
+            revert PolicyNotYetExpired(policyId, policy.endDate, block.timestamp);
         }
 
         // Decrement active count

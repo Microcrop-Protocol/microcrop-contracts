@@ -343,12 +343,20 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
      * @dev Strips < > " and \, and escapes & to &amp;. Escaping the ampersand keeps the SVG
      *      valid XML and neutralizes numeric-entity injection (e.g. &#x3C; becomes inert as the
      *      leading & is escaped). (Finding 6)
+     *
+     *      JSON control chars: any byte < 0x20 (0x00-0x1F, e.g. raw newline 0x0A / carriage
+     *      return 0x0D) is replaced with a single space (0x20). The sanitized output is embedded
+     *      unescaped into a JSON string inside the Base64 token URI, and RFC 8259 §7 forbids raw
+     *      control characters in JSON strings; a same-length space replacement keeps the output
+     *      valid JSON without disturbing the buffer-length math. (Unicode bidirectional overrides
+     *      are a display-only concern handled by multi-byte UTF-8 and are out of scope here.)
      * @param input The raw input string
      * @return sanitized The sanitized string safe for SVG and JSON
      */
     function _sanitizeSVG(string memory input) internal pure returns (string memory) {
         bytes memory inputBytes = bytes(input);
-        // First pass: compute output length. Drop < > " \ ; escape & -> &amp; (5 bytes).
+        // First pass: compute output length. Drop < > " \ ; escape & -> &amp; (5 bytes);
+        // control chars (< 0x20) collapse to a single space (length-neutral, 1 byte).
         uint256 outLen = 0;
         for (uint256 i = 0; i < inputBytes.length; i++) {
             bytes1 b = inputBytes[i];
@@ -357,7 +365,7 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
             } else if (b == 0x26) {
                 outLen += 5; // & -> &amp;
             } else {
-                outLen += 1;
+                outLen += 1; // includes control chars (< 0x20) -> space, 1 byte
             }
         }
         bytes memory result = new bytes(outLen);
@@ -372,6 +380,8 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
                 result[j++] = 0x6D; // m
                 result[j++] = 0x70; // p
                 result[j++] = 0x3B; // ;
+            } else if (b < 0x20) {
+                result[j++] = 0x20; // JSON control char (0x00-0x1F) -> space (RFC 8259 §7)
             } else {
                 result[j++] = b;
             }
