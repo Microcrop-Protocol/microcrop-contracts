@@ -169,8 +169,18 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
     ///         Drives the Treasury's reserveRequired(org) solvency check.
     mapping(address => uint256) private _orgOutstandingSumInsured;
 
-    /// @dev Reserved storage gap (was 46; reduced by 2 for _policyOrg + _orgOutstandingSumInsured).
-    uint256[44] private __gap;
+    /// @notice Whether a policy was counted in `_farmerPendingCounts` at creation.
+    /// @dev Appended in this upgrade (consumes one former __gap slot). `_farmerPendingCounts`
+    ///      is new, so it reads 0 for policies created before the upgrade. This flag decouples
+    ///      the PENDING-count decrement from legacy state: a decrement runs only for a policy
+    ///      that actually incremented the counter, so the decrement corresponds exactly to the
+    ///      increment and can never consume a slot belonging to a post-upgrade PENDING policy
+    ///      (Finding 8).
+    mapping(uint256 => bool) private _pendingCounted;
+
+    /// @dev Reserved storage gap (was 46; reduced by 3 for _policyOrg + _orgOutstandingSumInsured
+    ///      + _pendingCounted).
+    uint256[43] private __gap;
 
     // ============ Events ============
 
@@ -231,6 +241,15 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
     event PolicyNFTSet(address indexed policyNFT);
 
     /**
+     * @notice Emitted when an NFT status update is skipped during a lifecycle transition
+     * @dev Occurs for legacy policies that have no minted NFT (e.g. activated before the
+     *      PolicyNFT integration). The core state transition still completes; the skip is
+     *      recorded for observability only (Finding 5).
+     * @param policyId Unique identifier of the policy whose NFT update was skipped
+     */
+    event PolicyNFTUpdateSkipped(uint256 indexed policyId);
+
+    /**
      * @notice Emitted when a farmer's claim count is incremented
      * @param farmer Address of the farmer
      * @param year The year for which the claim count was incremented
@@ -284,6 +303,12 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
 
     /// @notice Thrown when a policy already has a backing org (legacy backfill guard)
     error OrgAlreadySet(uint256 policyId);
+
+    /// @notice Thrown when activating a policy whose backing org has not been resolved.
+    /// @dev A pre-v3 PENDING policy must be backfilled via `setLegacyPolicyOrg` before
+    ///      activation, otherwise it would go ACTIVE attributed to address(0) and the
+    ///      Treasury would permanently revert `OrgNotResolved` (Finding 7).
+    error OrgNotSetForPolicy(uint256 policyId);
 
     // ============ Constructor ============
 
@@ -440,11 +465,14 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
         // Record the backing org (its reserve funds any payout for this policy).
         _policyOrg[policyId] = org;
 
-        // Update farmer's policy tracking
+        // Update farmer's policy tracking. Mark the policy as counted so the matching
+        // decrement (on activation/cancellation) runs exactly once and never touches a
+        // slot belonging to another policy (Finding 8).
         _farmerPolicies[farmer].push(policyId);
         unchecked {
             ++_farmerPendingCounts[farmer];
         }
+        _pendingCounted[policyId] = true;
 
         // Emit event
         emit PolicyCreated(policyId, farmer, plotId, sumInsured, premium, startDate, endDate, coverageType);
@@ -491,6 +519,15 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
             revert InvalidPolicyStatus(policyId, policy.status, PolicyStatus.PENDING);
         }
 
+        // The backing org must be resolved before activation. The post-v3 createPolicy path
+        // always sets _policyOrg (it reverts ZeroAddressOrg on a zero org), so this guard never
+        // blocks a current-flow activation; it only stops a pre-v3 PENDING policy from going
+        // ACTIVE with an unset org, which would permanently brick premium/payout in the Treasury
+        // (Finding 7). Backfill via setLegacyPolicyOrg first.
+        if (_policyOrg[policyId] == address(0)) {
+            revert OrgNotSetForPolicy(policyId);
+        }
+
         // Enforce active policy limit at activation time
         uint256 currentActive = _farmerActiveCounts[policy.farmer];
         if (currentActive >= MAX_ACTIVE_POLICIES_PER_FARMER) {
@@ -503,14 +540,19 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
         policy.startDate = block.timestamp;
         policy.endDate = block.timestamp + duration;
 
-        // Move the farmer's slot from PENDING to ACTIVE (guard the decrement against any
-        // pre-upgrade PENDING policy that was never counted).
+        // Move the farmer's slot from PENDING to ACTIVE. Only decrement the PENDING count if
+        // this policy was actually counted at creation; a pre-upgrade PENDING policy has
+        // _pendingCounted == false, so activating it must not consume a slot belonging to a
+        // post-upgrade PENDING policy (Finding 8).
         unchecked {
             ++_farmerActiveCounts[policy.farmer];
         }
-        if (_farmerPendingCounts[policy.farmer] > 0) {
-            unchecked {
-                --_farmerPendingCounts[policy.farmer];
+        if (_pendingCounted[policyId]) {
+            delete _pendingCounted[policyId];
+            if (_farmerPendingCounts[policy.farmer] > 0) {
+                unchecked {
+                    --_farmerPendingCounts[policy.farmer];
+                }
             }
         }
 
@@ -576,10 +618,9 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
 
         // (Batch C) pool exposure tracking removed with RiskPool.
 
-        // Update NFT status to inactive (allows transfer)
-        if (address(policyNFT) != address(0)) {
-            policyNFT.updatePolicyStatus(policyId, false);
-        }
+        // Update NFT status to inactive (allows transfer). Non-fatal for legacy policies with
+        // no minted NFT so the claim transition can't be bricked (Finding 5).
+        _deactivatePolicyNFT(policyId);
 
         emit PolicyClaimed(policyId, block.timestamp);
     }
@@ -643,15 +684,19 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
             }
             // Active coverage cancelled — release the org's outstanding exposure.
             _releaseOrgExposure(policyId, policy.sumInsured);
-            // Update NFT status to inactive (allows transfer)
-            if (address(policyNFT) != address(0)) {
-                policyNFT.updatePolicyStatus(policyId, false);
-            }
+            // Update NFT status to inactive (allows transfer). Non-fatal for legacy policies
+            // with no minted NFT so the cancel transition can't be bricked (Finding 5).
+            _deactivatePolicyNFT(policyId);
         } else {
-            // PENDING policy: release its reserved open-policy slot (Finding 5).
-            if (_farmerPendingCounts[policy.farmer] > 0) {
-                unchecked {
-                    --_farmerPendingCounts[policy.farmer];
+            // PENDING policy: release its reserved open-policy slot, but only if this policy was
+            // actually counted at creation. A pre-upgrade PENDING policy has _pendingCounted ==
+            // false and must not consume a slot belonging to a post-upgrade policy (Finding 8).
+            if (_pendingCounted[policyId]) {
+                delete _pendingCounted[policyId];
+                if (_farmerPendingCounts[policy.farmer] > 0) {
+                    unchecked {
+                        --_farmerPendingCounts[policy.farmer];
+                    }
                 }
             }
         }
@@ -697,10 +742,9 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
 
         // (Batch C) pool exposure tracking removed with RiskPool.
 
-        // Update NFT status to inactive
-        if (address(policyNFT) != address(0)) {
-            policyNFT.updatePolicyStatus(policyId, false);
-        }
+        // Update NFT status to inactive. Non-fatal for legacy policies with no minted NFT so the
+        // expire transition can't be bricked (Finding 5).
+        _deactivatePolicyNFT(policyId);
 
         policy.status = PolicyStatus.EXPIRED;
 
@@ -823,6 +867,26 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
         address org = _policyOrg[policyId];
         uint256 outstanding = _orgOutstandingSumInsured[org];
         _orgOutstandingSumInsured[org] = outstanding > sumInsured ? outstanding - sumInsured : 0;
+    }
+
+    /// @dev Mark a policy's NFT inactive when it leaves ACTIVE coverage (claimed / cancelled /
+    ///      expired). Legacy policies activated before the PolicyNFT integration have no minted
+    ///      token, so `policyNFT.updatePolicyStatus` would revert `PolicyNotFound` and brick the
+    ///      whole lifecycle transition. The core state change (status, exposure release, counter
+    ///      decrement) MUST always succeed, so the NFT update is best-effort: skipped when there is
+    ///      no token, and wrapped in try/catch so ANY revert (e.g. PolicyNotFound, or NotPolicyManager
+    ///      if PolicyNFT.setPolicyManager was never wired) is swallowed and surfaced via an event for
+    ///      observability rather than reverting the lifecycle transition (Finding 5).
+    function _deactivatePolicyNFT(uint256 policyId) private {
+        if (address(policyNFT) != address(0) && policyNFT.policyNFTExists(policyId)) {
+            try policyNFT.updatePolicyStatus(policyId, false) {
+                return;
+            } catch {
+                emit PolicyNFTUpdateSkipped(policyId);
+            }
+        } else {
+            emit PolicyNFTUpdateSkipped(policyId);
+        }
     }
 
     /**

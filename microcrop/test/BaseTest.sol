@@ -84,6 +84,8 @@ abstract contract BaseTest is Test {
         // Set PolicyNFT on PolicyManager
         policyManager.setPolicyNFT(address(policyNFT));
         policyNFT.grantRole(policyNFT.MINTER_ROLE(), address(policyManager));
+        // PolicyManager is the sole authority for status updates (soulbound lifecycle)
+        policyNFT.setPolicyManager(address(policyManager));
 
         vm.stopPrank();
 

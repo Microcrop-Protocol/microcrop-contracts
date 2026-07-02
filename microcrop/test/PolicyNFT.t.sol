@@ -17,12 +17,15 @@ contract PolicyNFTTest is Test {
     address public farmer2 = address(0x3);
     address public distributor1 = address(0x4);
     address public distributor2 = address(0x5);
+    address public policyManager = address(0x6);
 
     function setUp() public {
         nft = new PolicyNFT("MicroCrop Insurance Certificate", "mcINS");
 
         // Grant minter role
         nft.grantRole(nft.MINTER_ROLE(), minter);
+        // Status updates are restricted to the PolicyManager address (soulbound lifecycle)
+        nft.setPolicyManager(policyManager);
     }
 
     // ============ Initialization Tests ============
@@ -221,8 +224,7 @@ contract PolicyNFTTest is Test {
     // ============ Status Update Tests ============
 
     function test_UpdatePolicyStatus_Success() public {
-        vm.startPrank(minter);
-
+        vm.prank(minter);
         nft.mintPolicy(
             farmer1,
             1,
@@ -240,17 +242,15 @@ contract PolicyNFTTest is Test {
         PolicyNFT.PolicyCertificate memory certBefore = nft.getCertificate(1);
         assertTrue(certBefore.isActive);
 
+        vm.prank(policyManager);
         nft.updatePolicyStatus(1, false);
 
         PolicyNFT.PolicyCertificate memory certAfter = nft.getCertificate(1);
         assertFalse(certAfter.isActive);
-
-        vm.stopPrank();
     }
 
     function test_UpdatePolicyStatus_EmitsEvent() public {
-        vm.startPrank(minter);
-
+        vm.prank(minter);
         nft.mintPolicy(
             farmer1,
             1,
@@ -267,15 +267,36 @@ contract PolicyNFTTest is Test {
 
         vm.expectEmit(true, false, false, true);
         emit PolicyNFT.PolicyStatusUpdated(1, false);
+        vm.prank(policyManager);
         nft.updatePolicyStatus(1, false);
-
-        vm.stopPrank();
     }
 
     function test_UpdatePolicyStatus_NotFound_Reverts() public {
-        vm.prank(minter);
+        vm.prank(policyManager);
         vm.expectRevert(abi.encodeWithSelector(PolicyNFT.PolicyNotFound.selector, 999));
         nft.updatePolicyStatus(999, false);
+    }
+
+    function test_UpdatePolicyStatus_OnlyPolicyManager() public {
+        vm.prank(minter);
+        nft.mintPolicy(
+            farmer1,
+            1,
+            distributor1,
+            "Dist1",
+            100_000e6,
+            5_000e6,
+            block.timestamp,
+            block.timestamp + 180 days,
+            PolicyNFT.CoverageType.DROUGHT,
+            "Kenya",
+            12345
+        );
+
+        // A MINTER_ROLE holder can no longer flip status — only the PolicyManager can.
+        vm.prank(minter);
+        vm.expectRevert(PolicyNFT.NotPolicyManager.selector);
+        nft.updatePolicyStatus(1, false);
     }
 
     // ============ Soulbound (Transfer Restriction) Tests ============
@@ -318,8 +339,8 @@ contract PolicyNFTTest is Test {
             12345
         );
 
-        // Deactivate the policy
-        vm.prank(minter);
+        // Deactivate the policy (only the PolicyManager may do this)
+        vm.prank(policyManager);
         nft.updatePolicyStatus(1, false);
 
         // Now transfer should work

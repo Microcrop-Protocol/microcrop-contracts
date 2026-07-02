@@ -80,6 +80,10 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
     /// @notice Base URI for external metadata (optional)
     string public baseExternalURI;
 
+    /// @notice PolicyManager contract authorized to update policy status
+    /// @dev Only this address may flip a certificate's active flag (Finding 6)
+    address public policyManager;
+
     // ============ Events ============
 
     /// @notice Emitted when a policy NFT is minted
@@ -94,6 +98,9 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
     /// @notice Emitted when a policy status is updated
     event PolicyStatusUpdated(uint256 indexed tokenId, bool isActive);
 
+    /// @notice Emitted when the authorized PolicyManager address is updated
+    event PolicyManagerUpdated(address indexed previousPolicyManager, address indexed newPolicyManager);
+
     // ============ Errors ============
 
     error ZeroAddress();
@@ -101,6 +108,7 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
     error PolicyAlreadyMinted(uint256 policyId);
     error TransferWhileActive(uint256 tokenId);
     error PolicyNotFound(uint256 policyId);
+    error NotPolicyManager();
 
     // ============ Constructor ============
 
@@ -178,11 +186,15 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
 
     /**
      * @notice Update policy active status (called when policy expires or is claimed)
-     * @dev Only callable by MINTER_ROLE
+     * @dev Only callable by the authorized PolicyManager. Restricting this to a single
+     *      trusted contract prevents any minter from clearing a certificate's active flag
+     *      to bypass the soulbound transfer restriction (Finding 6).
      * @param policyId The policy ID to update
      * @param isActive New active status
      */
-    function updatePolicyStatus(uint256 policyId, bool isActive) external onlyRole(MINTER_ROLE) {
+    function updatePolicyStatus(uint256 policyId, bool isActive) external {
+        if (msg.sender != policyManager) revert NotPolicyManager();
+
         uint256 tokenId = policyToToken[policyId];
         if (tokenId == 0) revert PolicyNotFound(policyId);
 
@@ -238,12 +250,27 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
     }
 
     /**
+     * @notice Human-readable label for a coverage type
+     * @dev Shared by _generateSVG and _generateJSON so the two can never drift. Covers every
+     *      CoverageType variant; previously the inline ternary fell through to "Drought + Flood"
+     *      for EXCESS_RAIN and COMPREHENSIVE, baking wrong labels into the immutable URI (Finding 3).
+     *      All returned strings are static ASCII and therefore safe in both SVG text and JSON.
+     * @param coverageType The coverage type to label
+     * @return Human-readable coverage label
+     */
+    function _coverageLabel(CoverageType coverageType) internal pure returns (string memory) {
+        if (coverageType == CoverageType.DROUGHT) return "Drought";
+        if (coverageType == CoverageType.FLOOD) return "Flood";
+        if (coverageType == CoverageType.BOTH) return "Drought + Flood";
+        if (coverageType == CoverageType.EXCESS_RAIN) return "Excess Rain";
+        return "Comprehensive"; // COMPREHENSIVE
+    }
+
+    /**
      * @notice Generate SVG artwork for the policy certificate
      */
     function _generateSVG(PolicyCertificate memory cert) internal pure returns (string memory) {
-        string memory coverageStr = cert.coverageType == CoverageType.DROUGHT
-            ? "Drought"
-            : cert.coverageType == CoverageType.FLOOD ? "Flood" : "Drought + Flood";
+        string memory coverageStr = _coverageLabel(cert.coverageType);
 
         string memory statusColor = cert.isActive ? "#22c55e" : "#6b7280";
         string memory statusText = cert.isActive ? "ACTIVE" : "INACTIVE";
@@ -364,9 +391,7 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
      * @notice Generate JSON metadata
      */
     function _generateJSON(PolicyCertificate memory cert, string memory svg) internal pure returns (string memory) {
-        string memory coverageStr = cert.coverageType == CoverageType.DROUGHT
-            ? "Drought"
-            : cert.coverageType == CoverageType.FLOOD ? "Flood" : "Drought + Flood";
+        string memory coverageStr = _coverageLabel(cert.coverageType);
 
         string memory safeRegion = _sanitizeSVG(cert.region);
         string memory safeDistributor = _sanitizeSVG(cert.distributorName);
@@ -444,6 +469,18 @@ contract PolicyNFT is ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl 
      */
     function setBaseExternalURI(string calldata uri) external onlyRole(ADMIN_ROLE) {
         baseExternalURI = uri;
+    }
+
+    /**
+     * @notice Set the PolicyManager authorized to update policy status
+     * @param newPolicyManager Address of the PolicyManager contract
+     */
+    function setPolicyManager(address newPolicyManager) external onlyRole(ADMIN_ROLE) {
+        if (newPolicyManager == address(0)) revert ZeroAddress();
+
+        address previousPolicyManager = policyManager;
+        policyManager = newPolicyManager;
+        emit PolicyManagerUpdated(previousPolicyManager, newPolicyManager);
     }
 
     // ============ Required Overrides ============
