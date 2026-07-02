@@ -588,6 +588,6 @@ contract PayoutReceiver is
      * @return The contract version string
      */
     function version() external pure returns (string memory) {
-        return "2.0.0";
+        return "2.1.0"; // security audit batch 1-2
     }
 }

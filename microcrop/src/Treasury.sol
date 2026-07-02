@@ -759,6 +759,6 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
      * @return version The contract version string
      */
     function version() external pure returns (string memory) {
-        return "3.0.0"; // per-org treasury (v3)
+        return "3.1.0"; // per-org treasury (v3) + security audit batch 1-2
     }
 }
