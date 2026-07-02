@@ -93,6 +93,8 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     uint256 public totalPremiums;
 
     /// @notice High-water mark of net premiums for reserve calculation (never decremented)
+    /// @dev DEPRECATED: retained for storage-layout compatibility; no longer updated
+    ///      (was an unused v1 high-water mark).
     uint256 public peakPremiums;
 
     /// @notice Lifetime total payouts disbursed
@@ -123,10 +125,14 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     ///         Premiums credit it; payouts debit it; the org withdraws surplus above reserveRequired.
     mapping(address => uint256) public orgReserve;
 
-    /// @notice Per-org reserve ratio in true bps. 0 = use DEFAULT_RESERVE_RATIO_BPS. Platform-admin set.
+    /// @notice Per-org reserve ratio in true bps. Only meaningful when orgRatioSet[org] is true;
+    ///         otherwise DEFAULT_RESERVE_RATIO_BPS applies (a stored 0 is a valid explicit ratio).
+    ///         Platform-admin set.
     mapping(address => uint256) public orgReserveRatioBps;
 
-    /// @notice Per-org platform fee in true bps. 0 = fall back to the global platformFeePercent. Platform-admin set.
+    /// @notice Per-org platform fee in true bps. Only meaningful when orgFeeSet[org] is true;
+    ///         otherwise the global platformFeePercent applies (a stored 0 is a valid explicit fee).
+    ///         Platform-admin set.
     mapping(address => uint256) public orgFeeBps;
 
     /// @notice Running sum of all orgReserve balances. Lets emergencyWithdraw recover only
@@ -134,8 +140,22 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     ///         drain funds that back org reserves or platform fees.
     uint256 public totalOrgReserves;
 
-    /// @dev Reserved storage gap (was 48; reduced by 5 for policyManager + 3 org mappings + totalOrgReserves).
-    uint256[43] private __gap;
+    /// @notice Presence flag for orgFeeBps: true once setOrgFeeBps has been called for the org,
+    ///         so an explicit 0-bps fee is honored instead of falling back to the global rate.
+    mapping(address => bool) private orgFeeSet;
+
+    /// @notice Presence flag for orgReserveRatioBps: true once setOrgReserveRatioBps has been called
+    ///         for the org, so an explicit 0-bps reserve ratio is honored instead of the default.
+    mapping(address => bool) private orgRatioSet;
+
+    /// @notice PayoutReceiver contract authorized to call requestPayout. When set (non-zero),
+    ///         requestPayout additionally requires msg.sender == payoutReceiver (defense-in-depth
+    ///         on top of PAYOUT_ROLE). Zero keeps deploy ordering flexible before wiring.
+    address public payoutReceiver;
+
+    /// @dev Reserved storage gap (was 48; reduced by 8 for policyManager + 3 org mappings +
+    ///      totalOrgReserves + orgFeeSet + orgRatioSet + payoutReceiver).
+    uint256[40] private __gap;
 
     // ============ Events ============
 
@@ -187,6 +207,9 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     event OrgReserveDeposited(address indexed org, address indexed from, uint256 amount);
     /// @notice Emitted when an org's reserve is debited for a payout.
     event OrgReserveDebited(address indexed org, uint256 indexed policyId, uint256 amount);
+    /// @notice Emitted (non-reverting) when, after a payout, an org's remaining reserve falls below
+    ///         its required reserve — a solvency alert for the backend/platform admin.
+    event ReserveBelowRequirement(address indexed org, uint256 remaining, uint256 required);
     /// @notice Emitted when an org withdraws surplus reserve.
     event OrgSurplusWithdrawn(address indexed org, address indexed to, uint256 amount);
     /// @notice Emitted when the platform admin sets an org's reserve ratio.
@@ -195,6 +218,8 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     event OrgFeeBpsSet(address indexed org, uint256 feeBps);
     /// @notice Emitted when the PolicyManager reference is set.
     event PolicyManagerSet(address indexed policyManager);
+    /// @notice Emitted when the authorized PayoutReceiver reference is set.
+    event PayoutReceiverSet(address indexed payoutReceiver);
 
     // ============ Custom Errors ============
 
@@ -233,6 +258,9 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
 
     /// @notice Thrown when the PolicyManager reference has not been configured (post-upgrade setup).
     error PolicyManagerNotSet();
+
+    /// @notice Thrown when requestPayout is called by an address other than the wired PayoutReceiver.
+    error NotPayoutReceiver(address caller);
 
     /// @notice Thrown when a per-org bps parameter exceeds its ceiling.
     error BpsTooHigh(uint256 provided, uint256 maximum);
@@ -320,7 +348,6 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
         premiumReceived[policyId] = true;
         accumulatedFees += platformFee;
         totalPremiums += netPremium;
-        peakPremiums += netPremium;
         // Credit the org's own reserve — this is the pool that backs its payouts.
         orgReserve[org] += netPremium;
         totalOrgReserves += netPremium;
@@ -354,6 +381,10 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     {
         // Validate inputs
         if (amount == 0) revert ZeroAmount();
+        // Defense-in-depth: when the PayoutReceiver is wired, restrict callers to it (in addition
+        // to PAYOUT_ROLE), so a mis-granted role alone cannot drain reserves. Zero keeps deploy
+        // ordering flexible: the role still applies before the address is set.
+        if (payoutReceiver != address(0) && msg.sender != payoutReceiver) revert NotPayoutReceiver(msg.sender);
         if (payoutProcessed[policyId]) revert PayoutAlreadyProcessed(policyId);
         // Defense-in-depth: never pay out a policy whose premium was never collected.
         if (!premiumReceived[policyId]) revert PremiumNotReceived(policyId);
@@ -378,6 +409,14 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
 
         emit PayoutSent(policyId, amount, backendWallet);
         emit OrgReserveDebited(org, policyId, amount);
+
+        // Solvency signal (non-reverting): a cascade of otherwise-valid payouts can drain an org
+        // below its required reserve. We never block a valid payout — the farmer is owed money —
+        // but we surface it so the backend/platform admin can alert the org to top up.
+        uint256 required = reserveRequired(org);
+        if (orgReserve[org] < required) {
+            emit ReserveBelowRequirement(org, orgReserve[org], required);
+        }
     }
 
     // ============ Per-org treasury (v3) ============
@@ -434,12 +473,21 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
         emit PolicyManagerSet(_policyManager);
     }
 
+    /// @notice Sets the authorized PayoutReceiver (post-upgrade wiring). Admin only. Once set,
+    ///         requestPayout requires msg.sender == payoutReceiver on top of PAYOUT_ROLE.
+    function setPayoutReceiver(address _payoutReceiver) external onlyRole(ADMIN_ROLE) {
+        if (_payoutReceiver == address(0)) revert ZeroAddress();
+        payoutReceiver = _payoutReceiver;
+        emit PayoutReceiverSet(_payoutReceiver);
+    }
+
     /// @notice Sets an org's reserve ratio (true bps). Platform admin only — this is MicroCrop's
     ///         only lever over org capital (set the solvency rule; never move the money).
     function setOrgReserveRatioBps(address org, uint256 ratioBps) external onlyRole(ADMIN_ROLE) {
         if (org == address(0)) revert ZeroAddress();
         if (ratioBps > MAX_RESERVE_RATIO_BPS) revert BpsTooHigh(ratioBps, MAX_RESERVE_RATIO_BPS);
         orgReserveRatioBps[org] = ratioBps;
+        orgRatioSet[org] = true;
         emit OrgReserveRatioSet(org, ratioBps);
     }
 
@@ -448,6 +496,7 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
         if (org == address(0)) revert ZeroAddress();
         if (feeBps > MAX_FEE_BPS) revert BpsTooHigh(feeBps, MAX_FEE_BPS);
         orgFeeBps[org] = feeBps;
+        orgFeeSet[org] = true;
         emit OrgFeeBpsSet(org, feeBps);
     }
 
@@ -458,16 +507,18 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
         if (org == address(0)) revert OrgNotResolved(policyId);
     }
 
-    /// @dev Effective reserve ratio for an org (per-org override, else default).
+    /// @dev Effective reserve ratio for an org (explicit per-org value if set — including 0 —
+    ///      else the default).
     function _reserveRatioBps(address org) private view returns (uint256) {
         uint256 r = orgReserveRatioBps[org];
-        return r == 0 ? DEFAULT_RESERVE_RATIO_BPS : r;
+        return orgRatioSet[org] ? r : DEFAULT_RESERVE_RATIO_BPS;
     }
 
-    /// @dev Effective fee bps for an org (per-org override, else the global platformFeePercent).
+    /// @dev Effective fee bps for an org (explicit per-org value if set — including 0 — else the
+    ///      global platformFeePercent).
     function _feeBps(address org) private view returns (uint256) {
         uint256 f = orgFeeBps[org];
-        return f == 0 ? platformFeePercent * 100 : f; // platformFeePercent is a percent (10 -> 1000 bps)
+        return orgFeeSet[org] ? f : platformFeePercent * 100; // platformFeePercent is a percent (10 -> 1000 bps)
     }
 
     /**
@@ -568,9 +619,23 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
      * @notice Calculates the platform fee for a given premium amount
      * @param premium The gross premium amount
      * @return fee The platform fee amount
+     * @dev DEPRECATED: returns the global rate only; use calculatePlatformFee(premium, org) for the
+     *      actual per-org fee. This diverges from receivePremium, which charges the per-org rate.
      */
     function calculatePlatformFee(uint256 premium) public view returns (uint256 fee) {
         return (premium * platformFeePercent) / BASIS_POINTS;
+    }
+
+    /**
+     * @notice Calculates the actual platform fee charged for a premium on a given org's policy.
+     * @dev Mirrors receivePremium exactly: (premium * _feeBps(org)) / BPS_DENOMINATOR. Honors an
+     *      explicit per-org fee (including 0 bps) and otherwise falls back to the global rate.
+     * @param premium The gross premium amount
+     * @param org The backing org whose fee rate applies
+     * @return fee The platform fee amount
+     */
+    function calculatePlatformFee(uint256 premium, address org) public view returns (uint256 fee) {
+        return (premium * _feeBps(org)) / BPS_DENOMINATOR;
     }
 
     /**
@@ -584,6 +649,8 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     /**
      * @notice Calculates the amount available for payouts after reserve
      * @return available The amount available for payouts
+     * @dev DEPRECATED (v3): global pooled model; does not reflect per-org solvency. Use the
+     *      per-org views below.
      */
     function getAvailableForPayouts() public view returns (uint256 available) {
         uint256 balance = usdc.balanceOf(address(this));
@@ -597,8 +664,20 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     }
 
     /**
+     * @notice The amount available to fund payouts for a specific org (v3 per-org model).
+     * @dev A payout is funded solely from the org's own reserve; this returns that balance.
+     * @param org The org whose reserve to read
+     * @return available The org's current reserve balance
+     */
+    function getAvailableForPayouts(address org) external view returns (uint256 available) {
+        return orgReserve[org];
+    }
+
+    /**
      * @notice Checks if the treasury meets minimum reserve requirements
      * @return meetsReserve True if reserve requirements are met
+     * @dev DEPRECATED (v3): global pooled model; does not reflect per-org solvency. Use the
+     *      per-org views below.
      */
     function meetsReserveRequirements() public view returns (bool meetsReserve) {
         uint256 balance = usdc.balanceOf(address(this));
@@ -608,8 +687,19 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     }
 
     /**
+     * @notice Checks if an org meets its required reserve (v3 per-org model).
+     * @param org The org to check
+     * @return meetsReserve True if the org's reserve covers its required reserve
+     */
+    function meetsReserveRequirements(address org) external view returns (bool meetsReserve) {
+        return orgReserve[org] >= reserveRequired(org);
+    }
+
+    /**
      * @notice Returns the required minimum reserve amount
      * @return required The minimum reserve amount required
+     * @dev DEPRECATED (v3): global pooled model; does not reflect per-org solvency. Use the
+     *      per-org views below.
      */
     function getRequiredReserve() external view returns (uint256 required) {
         uint256 outstandingPremiums = totalPremiums > totalPayouts ? totalPremiums - totalPayouts : 0;
@@ -619,6 +709,8 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     /**
      * @notice Returns the current reserve ratio as a percentage
      * @return ratio The current reserve ratio (0-100+)
+     * @dev DEPRECATED (v3): global pooled model; does not reflect per-org solvency. Use the
+     *      per-org views below.
      */
     function getReserveRatio() external view returns (uint256 ratio) {
         uint256 outstandingPremiums = totalPremiums > totalPayouts ? totalPremiums - totalPayouts : 0;
@@ -667,6 +759,6 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
      * @return version The contract version string
      */
     function version() external pure returns (string memory) {
-        return "3.0.0"; // per-org treasury (v3)
+        return "3.1.0"; // per-org treasury (v3) + security audit batch 1-2
     }
 }

@@ -53,6 +53,10 @@ contract UpgradePolicyManager is Script {
         newPolicyNFT.grantRole(newPolicyNFT.MINTER_ROLE(), POLICY_MANAGER_PROXY);
         console.log("MINTER_ROLE granted to PolicyManager");
 
+        // 6. Reverse wiring: PolicyManager is the sole authority for status updates (Finding 6)
+        newPolicyNFT.setPolicyManager(POLICY_MANAGER_PROXY);
+        console.log("PolicyManager set on new PolicyNFT (status-update authority)");
+
         // 6. Grant BACKEND_ROLE to deployer (msg.sender) on PolicyManager
         proxy.grantRole(proxy.BACKEND_ROLE(), msg.sender);
         console.log("BACKEND_ROLE granted to deployer");

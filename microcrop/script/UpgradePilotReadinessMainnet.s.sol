@@ -51,7 +51,10 @@ contract UpgradePilotReadinessMainnet is Script {
         PolicyNFT nft = new PolicyNFT("MicroCrop Insurance Certificate", "mcINS");
         nft.grantRole(nft.MINTER_ROLE(), POLICY_MANAGER_PROXY);
         pm.setPolicyNFT(address(nft));
+        // Reverse wiring: PolicyManager is the sole authority for status updates (Finding 6).
+        nft.setPolicyManager(POLICY_MANAGER_PROXY);
         require(address(pm.policyNFT()) == address(nft), "setPolicyNFT rewire failed");
+        require(nft.policyManager() == POLICY_MANAGER_PROXY, "setPolicyManager rewire failed");
         console.log("PolicyNFT redeployed + rewired:", address(nft));
 
         vm.stopBroadcast();

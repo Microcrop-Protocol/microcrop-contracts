@@ -4,11 +4,14 @@ pragma solidity 0.8.28;
 import {BaseTest} from "./BaseTest.sol";
 import {Treasury} from "../src/Treasury.sol";
 import {PolicyManager} from "../src/PolicyManager.sol";
+import {stdStorage, StdStorage} from "forge-std/StdStorage.sol";
 
 /// @notice Unit tests for the per-org treasury (v3): premiums credit per-org reserves, payouts are
 ///         solvency-gated to the policy's org reserve, capital deposits + surplus withdrawals, and
 ///         the per-org fee/ratio parameters.
 contract PerOrgTreasuryTest is BaseTest {
+    using stdStorage for StdStorage;
+
     address constant ORG = address(0x019);
     uint256 constant SUM_INSURED = 1_000e6; // 1000 USDC
     uint256 constant PREMIUM = 50e6; // 50 USDC
@@ -206,9 +209,19 @@ contract PerOrgTreasuryTest is BaseTest {
     }
 
     function test_setLegacyPolicyOrg_backfillsOrg() public {
-        // A pre-v3 policy id (never created via v3 createPolicy) has _policyOrg == 0.
-        uint256 legacyId = 999;
+        // A non-existent policy id can no longer be backfilled — the existence guard
+        // prevents pre-installing a phantom org mapping for a future/typo'd id.
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(PolicyManager.PolicyDoesNotExist.selector, 999));
+        policyManager.setLegacyPolicyOrg(999, ORG);
+
+        // Simulate a genuine pre-v3 legacy policy: it EXISTS in storage but its org was
+        // never recorded (the _policyOrg mapping predates v3). Create a real policy, then
+        // clear its org slot to reproduce that migration state.
+        uint256 legacyId = _activePolicy();
+        stdstore.target(address(policyManager)).sig("policyOrg(uint256)").with_key(legacyId).checked_write(address(0));
         assertEq(policyManager.policyOrg(legacyId), address(0), "should start unset");
+
         vm.prank(admin);
         policyManager.setLegacyPolicyOrg(legacyId, ORG);
         assertEq(policyManager.policyOrg(legacyId), ORG, "backfill failed");
@@ -219,10 +232,10 @@ contract PerOrgTreasuryTest is BaseTest {
         vm.expectRevert(abi.encodeWithSelector(PolicyManager.OrgAlreadySet.selector, id));
         policyManager.setLegacyPolicyOrg(id, ORG);
 
-        // Non-admin cannot backfill.
+        // Non-admin cannot backfill (role check reverts before any other logic).
         vm.prank(unauthorized);
         vm.expectRevert();
-        policyManager.setLegacyPolicyOrg(1234, ORG);
+        policyManager.setLegacyPolicyOrg(legacyId, ORG);
     }
 
     function test_withdrawFees_toAdmin() public {
