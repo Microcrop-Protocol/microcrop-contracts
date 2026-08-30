@@ -64,7 +64,7 @@ contract PerOrgForkTest is Test {
         IUUPS(PAYOUT_RECEIVER).upgradeToAndCall(address(new PayoutReceiver()), "");
         assertEq(pm.version(), "3.1.0");
         assertEq(treasury.version(), "3.1.0");
-        assertEq(pr.version(), "2.1.0");
+        assertEq(pr.version(), "2.2.0");
 
         // Wire v3 + grant this test the roles to drive the flow.
         _grant(TREASURY, ADMIN_ROLE, address(this));
