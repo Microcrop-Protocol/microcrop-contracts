@@ -75,7 +75,7 @@ contract PilotUpgradeForkTest is Test {
         IUUPS(PAYOUT_RECEIVER).upgradeToAndCall(address(impl), "");
         vm.stopPrank();
 
-        assertEq(pr.version(), "2.1.0", "version() must read 2.1.0 after the upgrade");
+        assertEq(pr.version(), "2.2.0", "version() must read 2.2.0 after the upgrade");
     }
 
     /// @notice ACTION 2: authorizedSigner is UNSET before the upgrade (fn reverts on v1) and is set
@@ -135,7 +135,7 @@ contract PilotUpgradeForkTest is Test {
         address timelockImpl = address(new PayoutReceiver());
         vm.prank(timelock);
         IUUPS(PAYOUT_RECEIVER).upgradeToAndCall(timelockImpl, "");
-        assertEq(pr.version(), "2.1.0", "timelock upgrade did not take");
+        assertEq(pr.version(), "2.2.0", "timelock upgrade did not take");
     }
 
     /// @notice MONEY-PATH: after the FULL Action-1+2+3 sequence, a real PKP-signed determination
@@ -152,7 +152,7 @@ contract PilotUpgradeForkTest is Test {
         // ── Full pilot sequence, signed by the real EOA then migrated to the timelock. ──
         vm.startPrank(ADMIN_EOA);
         IUUPS(PAYOUT_RECEIVER).upgradeToAndCall(address(new PayoutReceiver()), "");
-        assertEq(pr.version(), "2.1.0");
+        assertEq(pr.version(), "2.2.0");
         pr.setAuthorizedSigner(prodSigner);
         pr.grantRole(RELAYER_ROLE, relayer);
         // migrate admin -> timelock (Action 3)

@@ -96,6 +96,41 @@ contract PayoutReceiver is
         uint256 weatherWind_e2;
     }
 
+    /**
+     * @notice CROP_DROUGHT signed-determination input (v2.2.0, methodology crop-drought-rdi-1.0).
+     * @dev Parallel to CropDetermination but for the rainfall-deficit drought index. The contract
+     *      reconstructs BOTH the inputsHash (abi.encode of the 13 fields — onChainPolicyId +
+     *      12 evidence fields) and the settlement preimageHash (abi.encodePacked of 11 fields)
+     *      from these raw values; it never trusts a passed-in hash. Units (FROZEN, §2):
+     *      - damagePercentBp: BASIS POINTS 0..10000 (the only unit on the money path)
+     *      - droughtDamage: WHOLE PERCENT 0..100 (single RDI score; satellite weight 0)
+     *      - latitude_e6/longitude_e6 (deg ×1e6) are SIGNED (int256, two's-complement)
+     *      - rainW*_e2 / rainRefW*_e2: observed / reference rainfall in centi-mm (mm ×1e2)
+     *      - cddW2Days: consecutive dry days in W2, carried as evidence with weight 0 (§7)
+     *      - sourceHash / methodologyParamsHash: provenance bindings (keccak of canonical JSON)
+     */
+    struct DroughtDetermination {
+        // --- settlement preimage (result/subject) ---
+        uint256 onChainPolicyId;
+        uint256 damagePercentBp; // basis points 0..10000
+        uint256 droughtDamage; // whole percent 0..100 (single score)
+        uint256 payoutAmount; // USDC base units (6 dp)
+        uint256 assessedAt; // unix seconds
+        // --- evidence (inputsHash order 2..13) ---
+        int256 latitude_e6;
+        int256 longitude_e6;
+        uint256 sumInsured; // must equal policy.sumInsured
+        uint256 seasonStartEpoch; // planting date 00:00 UTC
+        uint256 lgpDays; // length of growing period (e.g. 180)
+        uint256 rainW1_e2; // observed rainfall DAP 1–40, centi-mm
+        uint256 rainRefW1_e2; // 1991–2020 median W1
+        uint256 rainW2_e2; // observed rainfall DAP 71–110, centi-mm
+        uint256 rainRefW2_e2; // median W2
+        uint256 cddW2Days; // longest dry run in W2 (weight 0)
+        bytes32 sourceHash; // keccak of the canonical archive projection
+        bytes32 methodologyParamsHash; // keccak of the exact methodology-param JSON
+    }
+
     // ============ Constants ============
 
     /// @notice Minimum damage threshold for payout (30% = 3000 basis points)
@@ -127,6 +162,12 @@ contract PayoutReceiver is
     bytes32 private constant KIND_CROP_HASH = keccak256("CROP_DAMAGE");
     /// @notice keccak256(bytes(methodologyVersion)) for "crop-dualindex-1.0" (pins weights 60/40, §8.6)
     bytes32 private constant METHODOLOGY_CROP_HASH = keccak256("crop-dualindex-1.0");
+
+    // ---- CROP_DROUGHT path domain constants (v2.2.0, FROZEN §2) ----
+    /// @notice keccak256(bytes(kind)) for "CROP_DROUGHT"
+    bytes32 private constant KIND_DROUGHT_HASH = keccak256("CROP_DROUGHT");
+    /// @notice keccak256(bytes(methodologyVersion)) for "crop-drought-rdi-1.0" (single-score RDI)
+    bytes32 private constant METHODOLOGY_DROUGHT_HASH = keccak256("crop-drought-rdi-1.0");
 
     // ============ Role Definitions ============
 
@@ -302,6 +343,12 @@ contract PayoutReceiver is
 
     /// @notice Thrown when the determination's sumInsured does not match the on-chain policy
     error SumInsuredMismatch(uint256 provided, uint256 expected);
+
+    /// @notice Thrown when the drought single-score (droughtDamage) is outside 0..100 (whole percent)
+    error DroughtScoreOutOfRange(uint256 droughtDamage);
+
+    /// @notice Thrown when the single-score invariant fails: damagePercentBp != droughtDamage * 100
+    error InvalidDroughtDamage(uint256 calculated, uint256 provided);
 
     // ============ Constructor ============
 
@@ -519,6 +566,170 @@ contract PayoutReceiver is
     }
 
     /**
+     * @notice Verifies a PKP-signed CROP_DROUGHT determination and triggers payout (v2.2.0).
+     * @dev Parallel path to submitDetermination for the rainfall-deficit drought index
+     *      (methodology crop-drought-rdi-1.0). SAME trust root, modifiers, storage, and replay
+     *      map; the ONLY difference is the damage block — a single RDI score (droughtDamage)
+     *      replaces the dual-index weather/satellite sub-scores and the 60/40 invariant. Because
+     *      the preimage embeds KIND_DROUGHT_HASH, drought preimages cannot collide with
+     *      CROP_DAMAGE preimages in the shared consumedDetermination map.
+     *
+     * Order (cheap checks first, signature + external calls last; CEI on effects):
+     *  1. signer configured
+     *  2. bounds: damageBp<=10000, droughtDamage<=100
+     *  3. single-score invariant: damageBp == droughtDamage * 100  (satellite weight 0)
+     *  4. threshold: damageBp >= 3000
+     *  5. policy: exists, ACTIVE, not expired, not already paid
+     *  6. evidence binds the real policy: d.sumInsured == policy.sumInsured
+     *  7. payout (bp): payoutAmount == sumInsured * damageBp / 10000
+     *  8. freshness: assessedAt within MAX_REPORT_AGE, not future
+     *  9. farmer claim limit
+     * 10. reconstruct inputsHash (abi.encode) + preimageHash (abi.encodePacked) ON-CHAIN
+     * 11. replay: preimageHash not consumed (shared map)
+     * 12. signature: ecrecover(preimageHash) == authorizedSigner
+     *
+     * @param d CROP_DROUGHT determination (result + evidence; see struct)
+     * @param signature 65-byte secp256k1 signature over the RAW preimageHash (no EIP-191 prefix)
+     */
+    function submitDroughtDetermination(DroughtDetermination calldata d, bytes calldata signature)
+        external
+        onlyRole(RELAYER_ROLE)
+        nonReentrant
+        whenNotPaused
+    {
+        // 1. authority root must be configured
+        if (authorizedSigner == address(0)) revert SignerNotConfigured();
+
+        // 2. bounds
+        if (d.damagePercentBp > MAX_DAMAGE_PERCENTAGE) {
+            revert DamageExceedsMaximum(d.damagePercentBp, MAX_DAMAGE_PERCENTAGE);
+        }
+        if (d.droughtDamage > 100) {
+            revert DroughtScoreOutOfRange(d.droughtDamage);
+        }
+
+        // 3. single-score invariant (basis points; satellite weight 0 — §2).
+        //    damagePercentBp == droughtDamage * 100.
+        uint256 expectedBp = d.droughtDamage * WEIGHT_DENOMINATOR;
+        if (expectedBp != d.damagePercentBp) {
+            revert InvalidDroughtDamage(expectedBp, d.damagePercentBp);
+        }
+
+        // 4. threshold
+        if (d.damagePercentBp < MIN_DAMAGE_THRESHOLD) {
+            revert DamageBelowThreshold(d.damagePercentBp, MIN_DAMAGE_THRESHOLD);
+        }
+
+        // 5. policy state
+        if (!policyManager.policyExists(d.onChainPolicyId)) {
+            revert PolicyDoesNotExist(d.onChainPolicyId);
+        }
+        PolicyManager.Policy memory policy = policyManager.getPolicy(d.onChainPolicyId);
+        if (policy.status != PolicyManager.PolicyStatus.ACTIVE) {
+            revert PolicyNotActive(d.onChainPolicyId, policy.status);
+        }
+        if (block.timestamp > policy.endDate) {
+            revert PolicyExpired(d.onChainPolicyId, policy.endDate, block.timestamp);
+        }
+        if (policyPaid[d.onChainPolicyId]) {
+            revert PolicyAlreadyPaid(d.onChainPolicyId);
+        }
+
+        // 6. evidence must bind the real policy's sum insured
+        if (d.sumInsured != policy.sumInsured) {
+            revert SumInsuredMismatch(d.sumInsured, policy.sumInsured);
+        }
+
+        // 7. payout (basis points — single unit on the money path)
+        uint256 expectedPayout = (policy.sumInsured * d.damagePercentBp) / BASIS_POINTS;
+        if (d.payoutAmount != expectedPayout) {
+            revert InvalidPayoutCalculation(d.payoutAmount, expectedPayout);
+        }
+
+        // 8. freshness: future-dated and stale are distinct failure modes.
+        if (d.assessedAt > block.timestamp) {
+            revert ReportInFuture(d.assessedAt, block.timestamp);
+        }
+        if (block.timestamp > d.assessedAt + MAX_REPORT_AGE) {
+            revert ReportTooOld(d.assessedAt, block.timestamp, MAX_REPORT_AGE);
+        }
+
+        // 9. farmer claim limit
+        if (!policyManager.canFarmerClaim(policy.farmer)) {
+            revert FarmerClaimLimitExceeded(policy.farmer);
+        }
+
+        // 10. reconstruct BOTH hashes on-chain — never trust a passed-in hash.
+        //     inputsHash: abi.encode (32B-padded, two's-complement int256). 13 fields, order FROZEN §2.
+        bytes32 inputsHash = keccak256(
+            abi.encode(
+                d.onChainPolicyId,
+                d.latitude_e6,
+                d.longitude_e6,
+                d.sumInsured,
+                d.seasonStartEpoch,
+                d.lgpDays,
+                d.rainW1_e2,
+                d.rainRefW1_e2,
+                d.rainW2_e2,
+                d.rainRefW2_e2,
+                d.cddW2Days,
+                d.sourceHash,
+                d.methodologyParamsHash
+            )
+        );
+        //     settlement preimage: abi.encodePacked. 11 fields, order FROZEN §2. chainId/contract
+        //     come from the chain, not the caller — a dev-signed determination can't verify on prod.
+        bytes32 preimageHash = keccak256(
+            abi.encodePacked(
+                SCHEMA_VERSION_HASH,
+                KIND_DROUGHT_HASH,
+                METHODOLOGY_DROUGHT_HASH,
+                block.chainid,
+                address(this),
+                inputsHash,
+                d.onChainPolicyId,
+                d.damagePercentBp,
+                d.droughtDamage,
+                d.payoutAmount,
+                d.assessedAt
+            )
+        );
+
+        // 11. replay guard (shared map; KIND_DROUGHT_HASH namespaces drought preimages)
+        if (consumedDetermination[preimageHash]) {
+            revert DeterminationAlreadyConsumed(preimageHash);
+        }
+
+        // 12. signature is the authority (raw digest, no EIP-191 prefix; OZ rejects malleable s)
+        address recovered = ECDSA.recoverCalldata(preimageHash, signature);
+        if (recovered != authorizedSigner) {
+            revert InvalidSignature(recovered, authorizedSigner);
+        }
+
+        // ============ All checks passed — effects before interactions (CEI) ============
+        consumedDetermination[preimageHash] = true;
+        policyPaid[d.onChainPolicyId] = true;
+        _damageReports[d.onChainPolicyId] = DamageReport({
+            policyId: d.onChainPolicyId,
+            damagePercentage: d.damagePercentBp,
+            weatherDamage: 0,
+            satelliteDamage: 0,
+            payoutAmount: d.payoutAmount,
+            assessedAt: d.assessedAt
+        });
+
+        // Interactions
+        treasury.requestPayout(d.onChainPolicyId, d.payoutAmount);
+        policyManager.markAsClaimed(d.onChainPolicyId);
+        policyManager.incrementClaimCount(policy.farmer);
+
+        emit DeterminationVerified(d.onChainPolicyId, preimageHash, recovered);
+        emit DamageReportReceived(d.onChainPolicyId, d.damagePercentBp, d.payoutAmount, policy.farmer);
+        emit PayoutInitiated(d.onChainPolicyId, d.payoutAmount);
+    }
+
+    /**
      * @notice Sets the accredited calculating-agent signer (PKP EVM address) for this environment.
      * @dev Authority root for `submitDetermination`. Role-gated; environment-specific (§6.3).
      * @param _authorizedSigner The PKP-derived EVM address
@@ -588,6 +799,6 @@ contract PayoutReceiver is
      * @return The contract version string
      */
     function version() external pure returns (string memory) {
-        return "2.1.0"; // security audit batch 1-2
+        return "2.2.0"; // + CROP_DROUGHT (crop-drought-rdi-1.0) settlement path
     }
 }
