@@ -1063,9 +1063,15 @@ RPC_URL=https://mainnet.base.org
 | `MAX_SUM_INSURED` | 1,000,000 USDC | Maximum coverage |
 | `MIN_DURATION_DAYS` | 30 | Minimum policy length |
 | `MAX_DURATION_DAYS` | 365 | Maximum policy length |
-| `MAX_ACTIVE_POLICIES` | 5 | Per farmer |
-| `MAX_CLAIMS_PER_YEAR` | 3 | Per farmer |
+| `MAX_ACTIVE_POLICIES` | 3 | Per farmer: open (PENDING + ACTIVE) policies **plus claims paid in the rolling 365-day window** must stay below this at `createPolicy`; was 5 (open only) before PolicyManager 3.2.0. Check it before charging the farmer. |
+| `MAX_CLAIMS_PER_YEAR` | 3 | Per farmer, in any rolling 365-day window (PolicyManager 3.2.0) |
+| `DEFAULT_RESERVE_RATIO_BPS` | 3000 | 30% of outstanding (PENDING + ACTIVE) sum insured; also the floor (Treasury 3.2.0) |
 | `PLATFORM_FEE` | 10% | Default fee |
+
+**PolicyManager 3.2.0 precondition.** The per-farmer limits above assume each policy's `farmer` is a
+distinct per-farmer address. If the backend passes one shared address (e.g. its own wallet) for every
+farmer, the limits apply platform-wide. `Treasury.receivePremium` also reverts `PolicyNotOpen` for a
+CANCELLED / EXPIRED / CLAIMED policy and `PolicyCoverageEnded` for an ACTIVE policy past `endDate`.
 
 ### Function Quick Reference
 

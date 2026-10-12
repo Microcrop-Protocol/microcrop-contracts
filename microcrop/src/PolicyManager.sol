@@ -101,11 +101,20 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
     /// @notice Maximum policy duration in days
     uint256 public constant MAX_DURATION_DAYS = 365;
 
-    /// @notice Maximum active policies per farmer
-    uint256 public constant MAX_ACTIVE_POLICIES_PER_FARMER = 5;
+    /// @notice Maximum open (ACTIVE + PENDING) policies per farmer.
+    /// @dev Equal to MAX_CLAIMS_PER_FARMER_PER_YEAR (v3.2.0, was 5). With 5 open policies and a
+    ///      3-claim cap, two policies whose premiums were paid could never pay out in a bad
+    ///      season (audit finding 8). Product-rule change: a farmer holds at most 3 open policies,
+    ///      and createPolicy also counts claims paid in the rolling CLAIM_WINDOW against this cap,
+    ///      so open policies + recent claims never exceed the claim cap.
+    uint256 public constant MAX_ACTIVE_POLICIES_PER_FARMER = 3;
 
-    /// @notice Maximum claims per farmer per year
+    /// @notice Maximum paid claims per farmer in any rolling CLAIM_WINDOW
     uint256 public constant MAX_CLAIMS_PER_FARMER_PER_YEAR = 3;
+
+    /// @notice Length of the rolling claim-limit window (v3.2.0). A farmer may receive at most
+    ///         MAX_CLAIMS_PER_FARMER_PER_YEAR paid claims in any 365-day span.
+    uint256 public constant CLAIM_WINDOW = 365 days;
 
     /// @notice Seconds in a day for duration calculations
     uint256 private constant SECONDS_PER_DAY = 86400;
@@ -139,8 +148,10 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
     /// @notice Mapping from farmer address to count of active policies
     mapping(address => uint256) private _farmerActiveCounts;
 
-    /// @notice Mapping from farmer address to year to claim count
-    /// @dev Year is calculated as timestamp / 365 days from epoch
+    /// @notice Mapping from farmer address to fixed-bucket "year" to claim count
+    /// @dev Year is calculated as timestamp / 365 days from epoch. INFORMATIONAL ONLY since
+    ///      v3.2.0: still incremented (getFarmerClaimCount stays meaningful for indexers), but the
+    ///      claim limit is enforced on the rolling window in _recentClaimTimestamps (finding 8).
     mapping(address => mapping(uint256 => uint256)) private _farmerClaimCounts;
 
     /// @notice PolicyNFT contract for minting farmer certificates
@@ -165,7 +176,8 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
     ///         Treasury to resolve which org's reserve backs a policy (per-org-treasury / v3).
     mapping(uint256 => address) private _policyOrg;
 
-    /// @notice Per-org outstanding (ACTIVE, unpaid) sum insured, aggregated across all products.
+    /// @notice Per-org outstanding (PENDING + ACTIVE, unpaid) sum insured, aggregated across all
+    ///         products. PENDING exposure is counted from createPolicy since v3.2.0.
     ///         Drives the Treasury's reserveRequired(org) solvency check.
     mapping(address => uint256) private _orgOutstandingSumInsured;
 
@@ -178,9 +190,28 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
     ///      (Finding 8).
     mapping(uint256 => bool) private _pendingCounted;
 
-    /// @dev Reserved storage gap (was 46; reduced by 3 for _policyOrg + _orgOutstandingSumInsured
-    ///      + _pendingCounted).
-    uint256[43] private __gap;
+    /// @notice Timestamps of each farmer's most recent MAX_CLAIMS_PER_FARMER_PER_YEAR paid claims
+    ///         (unordered; 0 = empty slot). Drives the rolling 365-day claim limit.
+    /// @dev Appended in v3.2.0 (consumes one former __gap slot). Replaces enforcement on the fixed
+    ///      `block.timestamp / 365 days` bucket, whose edge (2026-12-18 00:00 UTC) let a farmer
+    ///      take 2 x MAX claims within seconds (audit finding 8). Empty for every farmer at upgrade
+    ///      time: claims paid before v3.2.0 are not counted against the new window.
+    mapping(address => uint256[MAX_CLAIMS_PER_FARMER_PER_YEAR]) private _recentClaimTimestamps;
+
+    /// @notice Whether a policy's sum insured is currently counted in its org's
+    ///         _orgOutstandingSumInsured.
+    /// @dev Appended in v3.2.0 (consumes one former __gap slot). Exposure is now counted at
+    ///      createPolicy, so a premium credited to a PENDING policy is backed by reserve the org
+    ///      cannot withdraw (audit finding 10). Policies created before v3.2.0 have this false:
+    ///      a pre-upgrade PENDING policy adds its exposure at activation instead, exactly once;
+    ///      cancelling a PENDING policy releases exposure only when this flag is set. Every ACTIVE
+    ///      policy has its exposure counted (at creation, at activation, or by
+    ///      setLegacyPolicyOrg), so the ACTIVE exit paths release unconditionally, as before.
+    mapping(uint256 => bool) private _exposureCounted;
+
+    /// @dev Reserved storage gap (was 46; reduced by 5 for _policyOrg + _orgOutstandingSumInsured
+    ///      + _pendingCounted + _recentClaimTimestamps + _exposureCounted).
+    uint256[41] private __gap;
 
     // ============ Events ============
 
@@ -390,7 +421,8 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
      * - Sum insured must be between 10,000 and 1,000,000 USDC
      * - Premium must be greater than zero
      * - Duration must be between 30 and 365 days
-     * - Farmer cannot have more than 5 active policies
+     * - Farmer's open policies + claims paid in the rolling window must stay below
+     *   MAX_ACTIVE_POLICIES_PER_FARMER (3)
      *
      * @param farmer Address of the farmer receiving coverage
      * @param plotId Off-chain reference to the plot being insured
@@ -438,11 +470,14 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
             revert InvalidDuration(durationDays, MIN_DURATION_DAYS, MAX_DURATION_DAYS);
         }
 
-        // Cap TOTAL open policies (ACTIVE + PENDING) at creation time, so unactivated PENDING
-        // policies cannot accumulate without bound (Finding 5).
-        uint256 currentOpenPolicies = _farmerActiveCounts[farmer] + _farmerPendingCounts[farmer];
-        if (currentOpenPolicies >= MAX_ACTIVE_POLICIES_PER_FARMER) {
-            revert TooManyActivePolicies(farmer, currentOpenPolicies, MAX_ACTIVE_POLICIES_PER_FARMER);
+        // Cap open policies (ACTIVE + PENDING) PLUS claims already paid in the rolling window at
+        // creation time. Unactivated PENDING policies cannot accumulate without bound (Finding 5),
+        // and every open policy keeps a claim slot it can actually use: a farmer whose 3 policies
+        // just paid out cannot buy a 4th whose premium could never pay (audit finding 8). The
+        // `current` reported in TooManyActivePolicies is this combined count.
+        uint256 usedSlots = _farmerActiveCounts[farmer] + _farmerPendingCounts[farmer] + _claimsInWindow(farmer);
+        if (usedSlots >= MAX_ACTIVE_POLICIES_PER_FARMER) {
+            revert TooManyActivePolicies(farmer, usedSlots, MAX_ACTIVE_POLICIES_PER_FARMER);
         }
 
         // Generate unique policy ID (overflow protected)
@@ -468,6 +503,13 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
 
         // Record the backing org (its reserve funds any payout for this policy).
         _policyOrg[policyId] = org;
+
+        // Count the exposure NOW, not at activation: the Treasury credits the premium to the org's
+        // reserve while the policy is still PENDING, and reserveRequired(org) reads only this
+        // exposure. Counting it at creation stops the org withdrawing that premium before the
+        // policy activates (audit finding 10).
+        _orgOutstandingSumInsured[org] += sumInsured;
+        _exposureCounted[policyId] = true;
 
         // Update farmer's policy tracking. Mark the policy as counted so the matching
         // decrement (on activation/cancellation) runs exactly once and never touches a
@@ -560,9 +602,13 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
             }
         }
 
-        // The policy is now ACTIVE coverage — add its sum insured to the org's outstanding
-        // exposure, which the Treasury's reserveRequired(org) solvency check draws on.
-        _orgOutstandingSumInsured[_policyOrg[policyId]] += policy.sumInsured;
+        // The policy is now ACTIVE coverage. Its exposure was counted at createPolicy (v3.2.0);
+        // only a policy created before v3.2.0 still needs it added here — exactly once
+        // (audit finding 10).
+        if (!_exposureCounted[policyId]) {
+            _orgOutstandingSumInsured[_policyOrg[policyId]] += policy.sumInsured;
+            _exposureCounted[policyId] = true;
+        }
 
         // Mint NFT certificate to the farmer
         policyNFT.mintPolicy(
@@ -630,29 +676,34 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
     }
 
     /**
-     * @notice Increments the claim count for a farmer for the current year
+     * @notice Records a paid claim for a farmer against the rolling claim limit
      * @dev Only callable by addresses with ORACLE_ROLE (PayoutReceiver contract).
-     *      Enforces the maximum of 3 claims per farmer per year.
+     *      Enforces at most MAX_CLAIMS_PER_FARMER_PER_YEAR paid claims in any rolling
+     *      CLAIM_WINDOW (v3.2.0; previously a fixed `timestamp / 365 days` bucket whose edge let a
+     *      farmer take 2 x MAX claims within seconds — audit finding 8). The farmer's last MAX
+     *      claim timestamps are kept; the new claim replaces the oldest, and reverts if the oldest
+     *      is still inside the window. ClaimCountIncremented's `year` stays the legacy bucket for
+     *      ABI/indexer compatibility; `newCount` is now the number of claims in the rolling window.
      *
      * @param farmer The address of the farmer whose claim count to increment
      */
     function incrementClaimCount(address farmer) external onlyRole(ORACLE_ROLE) nonReentrant {
-        // Calculate current year (approximate, based on 365-day years)
         uint256 currentYear = block.timestamp / (365 days);
 
-        // Get current count and increment
-        uint256 currentCount = _farmerClaimCounts[farmer][currentYear];
-        uint256 newCount = currentCount + 1;
+        (uint256 slot, uint256 oldest) = _oldestClaimSlot(farmer);
+        if (oldest != 0 && block.timestamp - oldest < CLAIM_WINDOW) {
+            revert TooManyClaimsThisYear(
+                farmer, currentYear, MAX_CLAIMS_PER_FARMER_PER_YEAR, MAX_CLAIMS_PER_FARMER_PER_YEAR
+            );
+        }
+        _recentClaimTimestamps[farmer][slot] = block.timestamp;
 
-        // Check claim limit
-        if (newCount > MAX_CLAIMS_PER_FARMER_PER_YEAR) {
-            revert TooManyClaimsThisYear(farmer, currentYear, currentCount, MAX_CLAIMS_PER_FARMER_PER_YEAR);
+        // Legacy fixed-bucket counter: informational only (see _farmerClaimCounts).
+        unchecked {
+            ++_farmerClaimCounts[farmer][currentYear];
         }
 
-        // Update count
-        _farmerClaimCounts[farmer][currentYear] = newCount;
-
-        emit ClaimCountIncremented(farmer, currentYear, newCount);
+        emit ClaimCountIncremented(farmer, currentYear, _claimsInWindow(farmer));
     }
 
     /**
@@ -702,6 +753,11 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
                         --_farmerPendingCounts[policy.farmer];
                     }
                 }
+            }
+            // Release the exposure counted at creation (v3.2.0). A PENDING policy created before
+            // v3.2.0 never added exposure, so nothing is released for it (audit finding 10).
+            if (_exposureCounted[policyId]) {
+                _releaseOrgExposure(policyId, policy.sumInsured);
             }
         }
 
@@ -799,13 +855,37 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
     }
 
     /**
-     * @notice Checks if a farmer has reached their yearly claim limit
+     * @notice Checks if a farmer can receive another paid claim now
+     * @dev Mirrors incrementClaimCount exactly: true iff fewer than MAX_CLAIMS_PER_FARMER_PER_YEAR
+     *      claims were paid in the last CLAIM_WINDOW (rolling, v3.2.0).
      * @param farmer The address of the farmer
-     * @return hasCapacity True if farmer can still make claims this year
+     * @return hasCapacity True if farmer can still receive a claim
      */
     function canFarmerClaim(address farmer) external view returns (bool hasCapacity) {
-        uint256 currentYear = block.timestamp / (365 days);
-        return _farmerClaimCounts[farmer][currentYear] < MAX_CLAIMS_PER_FARMER_PER_YEAR;
+        (, uint256 oldest) = _oldestClaimSlot(farmer);
+        return oldest == 0 || block.timestamp - oldest >= CLAIM_WINDOW;
+    }
+
+    /**
+     * @notice Number of paid claims a farmer received in the last CLAIM_WINDOW (rolling)
+     * @param farmer The address of the farmer
+     * @return count Claims within the rolling window (0..MAX_CLAIMS_PER_FARMER_PER_YEAR)
+     */
+    function getFarmerClaimsInWindow(address farmer) external view returns (uint256 count) {
+        return _claimsInWindow(farmer);
+    }
+
+    /**
+     * @notice Timestamps of a farmer's most recent paid claims (unordered; 0 = empty)
+     * @param farmer The address of the farmer
+     * @return timestamps The last MAX_CLAIMS_PER_FARMER_PER_YEAR claim timestamps
+     */
+    function getFarmerRecentClaimTimestamps(address farmer)
+        external
+        view
+        returns (uint256[MAX_CLAIMS_PER_FARMER_PER_YEAR] memory timestamps)
+    {
+        return _recentClaimTimestamps[farmer];
     }
 
     /**
@@ -858,16 +938,52 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
         return _policyOrg[policyId];
     }
 
-    /// @notice An org's outstanding (ACTIVE, unpaid) sum insured across all products.
+    /// @notice An org's outstanding (PENDING + ACTIVE, unpaid) sum insured across all products.
+    ///         PENDING policies count from creation since v3.2.0 (audit finding 10).
     ///         The Treasury multiplies this by the org's reserve ratio to require reserves.
     function orgOutstandingSumInsured(address org) external view returns (uint256) {
         return _orgOutstandingSumInsured[org];
     }
 
-    /// @dev Release an org's outstanding exposure when a policy leaves ACTIVE coverage
-    ///      (claimed / cancelled / expired). Guards underflow for pre-v3 policies whose
+    /// @notice Whether a policy's sum insured is currently counted in its org's outstanding
+    ///         exposure. False for a PENDING policy created before v3.2.0 (counted on activation)
+    ///         and for any policy that has left coverage (CLAIMED / EXPIRED / CANCELLED).
+    function exposureCounted(uint256 policyId) external view returns (bool) {
+        return _exposureCounted[policyId];
+    }
+
+    /// @dev Index and value of the farmer's oldest recorded claim (an empty slot, value 0, counts
+    ///      as oldest so it is filled first).
+    function _oldestClaimSlot(address farmer) private view returns (uint256 slot, uint256 oldest) {
+        uint256[MAX_CLAIMS_PER_FARMER_PER_YEAR] storage ts = _recentClaimTimestamps[farmer];
+        oldest = ts[0];
+        for (uint256 i = 1; i < MAX_CLAIMS_PER_FARMER_PER_YEAR; ++i) {
+            uint256 t = ts[i];
+            if (t < oldest) {
+                oldest = t;
+                slot = i;
+            }
+        }
+    }
+
+    /// @dev Number of recorded claims still inside the rolling CLAIM_WINDOW.
+    function _claimsInWindow(address farmer) private view returns (uint256 count) {
+        uint256[MAX_CLAIMS_PER_FARMER_PER_YEAR] storage ts = _recentClaimTimestamps[farmer];
+        for (uint256 i = 0; i < MAX_CLAIMS_PER_FARMER_PER_YEAR; ++i) {
+            uint256 t = ts[i];
+            if (t != 0 && block.timestamp - t < CLAIM_WINDOW) {
+                ++count;
+            }
+        }
+    }
+
+    /// @dev Release an org's outstanding exposure when a policy leaves coverage (claimed /
+    ///      cancelled / expired, or a PENDING policy cancelled with _exposureCounted set). Guards underflow for pre-v3 policies whose
     ///      exposure was never recorded.
+    ///      Clears _exposureCounted: every caller moves the policy to a terminal state, so the
+    ///      flag reads "currently counted" (false for CLAIMED / EXPIRED / CANCELLED).
     function _releaseOrgExposure(uint256 policyId, uint256 sumInsured) private {
+        delete _exposureCounted[policyId];
         address org = _policyOrg[policyId];
         uint256 outstanding = _orgOutstandingSumInsured[org];
         _orgOutstandingSumInsured[org] = outstanding > sumInsured ? outstanding - sumInsured : 0;
@@ -898,6 +1014,6 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
      * @return The contract version string
      */
     function version() external pure returns (string memory) {
-        return "3.1.0"; // per-org treasury (v3) + security audit batch 1-2
+        return "3.2.0"; // + rolling claim window, creation-time exposure (audit findings 8, 10)
     }
 }

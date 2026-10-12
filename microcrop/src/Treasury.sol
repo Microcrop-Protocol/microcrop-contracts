@@ -8,11 +8,16 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/U
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {PolicyManager} from "./PolicyManager.sol";
 
 /// @notice Minimal PolicyManager view interface for per-org reserve accounting (v3).
+/// @dev `getPolicy` (present since PolicyManager v1) lets receivePremium refuse premiums for
+///      policies that are no longer open (audit finding 11). The struct type is imported for ABI
+///      decoding only; no PolicyManager bytecode is linked into the Treasury.
 interface IPolicyManagerOrg {
     function policyOrg(uint256 policyId) external view returns (address);
     function orgOutstandingSumInsured(address org) external view returns (uint256);
+    function getPolicy(uint256 policyId) external view returns (PolicyManager.Policy memory);
 }
 
 /**
@@ -56,8 +61,13 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     // ── Per-org treasury (v3) — true basis points (denominator 10000) ──
     /// @notice True basis-points denominator for per-org reserve/fee math.
     uint256 private constant BPS_DENOMINATOR = 10_000;
-    /// @notice Default per-org reserve ratio when unset: 2000 bps (20%).
-    uint256 public constant DEFAULT_RESERVE_RATIO_BPS = 2_000;
+    /// @notice Default per-org reserve ratio when unset: 3000 bps (30%).
+    /// @dev v3.2.0 (was 2000). Must be >= PayoutReceiver.MIN_DAMAGE_THRESHOLD (3000 bp), the
+    ///      smallest valid payout as a fraction of sum insured, so the required reserve always
+    ///      covers at least the smallest payout on every outstanding policy (audit finding 12).
+    uint256 public constant DEFAULT_RESERVE_RATIO_BPS = 3_000;
+    /// @notice Floor for a per-org reserve ratio: 3000 bps (30%), = the smallest valid payout.
+    uint256 public constant MIN_RESERVE_RATIO_BPS = 3_000;
     /// @notice Ceiling for a per-org reserve ratio: 10000 bps (100%).
     uint256 public constant MAX_RESERVE_RATIO_BPS = 10_000;
     /// @notice Ceiling for a per-org platform fee: 3000 bps (30%).
@@ -125,9 +135,10 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     ///         Premiums credit it; payouts debit it; the org withdraws surplus above reserveRequired.
     mapping(address => uint256) public orgReserve;
 
-    /// @notice Per-org reserve ratio in true bps. Only meaningful when orgRatioSet[org] is true;
-    ///         otherwise DEFAULT_RESERVE_RATIO_BPS applies (a stored 0 is a valid explicit ratio).
-    ///         Platform-admin set.
+    /// @notice Per-org reserve ratio in true bps, as stored. Only meaningful when orgRatioSet[org]
+    ///         is true; otherwise DEFAULT_RESERVE_RATIO_BPS applies. Since v3.2.0 a stored value
+    ///         below MIN_RESERVE_RATIO_BPS (set before the floor existed) is raised to the floor
+    ///         when applied — see effectiveReserveRatioBps. Platform-admin set.
     mapping(address => uint256) public orgReserveRatioBps;
 
     /// @notice Per-org platform fee in true bps. Only meaningful when orgFeeSet[org] is true;
@@ -145,7 +156,9 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     mapping(address => bool) private orgFeeSet;
 
     /// @notice Presence flag for orgReserveRatioBps: true once setOrgReserveRatioBps has been called
-    ///         for the org, so an explicit 0-bps reserve ratio is honored instead of the default.
+    ///         for the org, so the explicit ratio is honored instead of the default. (Since v3.2.0
+    ///         an explicit ratio can no longer be below MIN_RESERVE_RATIO_BPS; legacy sub-floor
+    ///         values are clamped up when applied.)
     mapping(address => bool) private orgRatioSet;
 
     /// @notice PayoutReceiver contract authorized to call requestPayout. When set (non-zero),
@@ -265,6 +278,18 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     /// @notice Thrown when a per-org bps parameter exceeds its ceiling.
     error BpsTooHigh(uint256 provided, uint256 maximum);
 
+    /// @notice Thrown when a per-org bps parameter is below its floor.
+    error BpsTooLow(uint256 provided, uint256 minimum);
+
+    /// @notice Thrown when a premium is received for a policy that is not PENDING or ACTIVE
+    ///         (cancelled, expired or claimed) — it would be credited to the org's reserve and
+    ///         become withdrawable without backing any coverage (audit finding 11).
+    error PolicyNotOpen(uint256 policyId, PolicyManager.PolicyStatus status);
+
+    /// @notice Thrown when a premium is received for an ACTIVE policy whose coverage period has
+    ///         ended but which the backend has not yet expired (audit finding 11, follow-up).
+    error PolicyCoverageEnded(uint256 policyId, uint256 endDate);
+
     /// @notice Thrown when a withdrawal would breach the org's required reserve.
     error WouldBreachReserve(address org, uint256 reserveRequired, uint256 remaining);
 
@@ -341,6 +366,20 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
 
         // Resolve the backing org and split the per-org platform fee.
         address org = _resolveOrg(policyId);
+
+        // Only an open policy (PENDING awaiting activation, or ACTIVE within its coverage period) can
+        // take a premium. A premium for a cancelled/expired/claimed policy backs no coverage (audit
+        // finding 11); nor does one for an ACTIVE policy past its endDate that the backend has not
+        // yet expired, since expirePolicy would release its exposure and free the premium as surplus.
+        // A PENDING policy's endDate is reset at activation, so it is not checked here.
+        PolicyManager.Policy memory p = policyManager.getPolicy(policyId);
+        if (p.status != PolicyManager.PolicyStatus.PENDING && p.status != PolicyManager.PolicyStatus.ACTIVE) {
+            revert PolicyNotOpen(policyId, p.status);
+        }
+        if (p.status == PolicyManager.PolicyStatus.ACTIVE && block.timestamp > p.endDate) {
+            revert PolicyCoverageEnded(policyId, p.endDate);
+        }
+
         uint256 platformFee = (amount * _feeBps(org)) / BPS_DENOMINATOR;
         uint256 netPremium = amount - platformFee;
 
@@ -459,7 +498,8 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
         emit OrgSurplusWithdrawn(org, to, amount);
     }
 
-    /// @notice The reserve an org must keep: outstanding (ACTIVE, unpaid) sum insured × its ratio.
+    /// @notice The reserve an org must keep: outstanding (PENDING + ACTIVE, unpaid) sum insured ×
+    ///         its effective reserve ratio.
     function reserveRequired(address org) public view returns (uint256) {
         if (address(policyManager) == address(0)) revert PolicyManagerNotSet();
         uint256 outstanding = policyManager.orgOutstandingSumInsured(org);
@@ -486,6 +526,7 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     function setOrgReserveRatioBps(address org, uint256 ratioBps) external onlyRole(ADMIN_ROLE) {
         if (org == address(0)) revert ZeroAddress();
         if (ratioBps > MAX_RESERVE_RATIO_BPS) revert BpsTooHigh(ratioBps, MAX_RESERVE_RATIO_BPS);
+        if (ratioBps < MIN_RESERVE_RATIO_BPS) revert BpsTooLow(ratioBps, MIN_RESERVE_RATIO_BPS);
         orgReserveRatioBps[org] = ratioBps;
         orgRatioSet[org] = true;
         emit OrgReserveRatioSet(org, ratioBps);
@@ -507,11 +548,19 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
         if (org == address(0)) revert OrgNotResolved(policyId);
     }
 
-    /// @dev Effective reserve ratio for an org (explicit per-org value if set — including 0 —
-    ///      else the default).
+    /// @notice The reserve ratio actually applied to an org, in true bps.
+    function effectiveReserveRatioBps(address org) external view returns (uint256) {
+        return _reserveRatioBps(org);
+    }
+
+    /// @dev Effective reserve ratio for an org: the explicit per-org value if set, else the
+    ///      default — never below MIN_RESERVE_RATIO_BPS. setOrgReserveRatioBps rejects sub-floor
+    ///      values since v3.2.0, but a ratio stored before then (e.g. an explicit 0 or 2000) is
+    ///      still flagged in orgRatioSet; it is clamped up here so no org keeps a sub-floor
+    ///      requirement across the upgrade (audit finding 12).
     function _reserveRatioBps(address org) private view returns (uint256) {
-        uint256 r = orgReserveRatioBps[org];
-        return orgRatioSet[org] ? r : DEFAULT_RESERVE_RATIO_BPS;
+        uint256 r = orgRatioSet[org] ? orgReserveRatioBps[org] : DEFAULT_RESERVE_RATIO_BPS;
+        return r < MIN_RESERVE_RATIO_BPS ? MIN_RESERVE_RATIO_BPS : r;
     }
 
     /// @dev Effective fee bps for an org (explicit per-org value if set — including 0 — else the
@@ -759,6 +808,6 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
      * @return version The contract version string
      */
     function version() external pure returns (string memory) {
-        return "3.1.0"; // per-org treasury (v3) + security audit batch 1-2
+        return "3.2.0"; // + open-policy premium guard, 30% reserve floor (audit findings 11, 12)
     }
 }
