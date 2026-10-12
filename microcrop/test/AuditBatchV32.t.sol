@@ -195,6 +195,73 @@ contract AuditBatchV32Test is BaseTest {
         }
     }
 
+    /// @notice Reviewer repro (finding 8, follow-up): 3 policies pay out at t; at t+1 day the
+    ///         farmer has 0 open policies but 3 claims in the window. A 4th policy could never pay,
+    ///         so createPolicy must refuse it until the oldest claim leaves the window.
+    function test_openPolicyCap_countsClaimsInWindow() public {
+        // Explicit times (not `block.timestamp` reads, which via-IR may re-evaluate after a warp).
+        uint256 t0 = BUCKET_EDGE - 10 days;
+        for (uint256 i = 0; i < 3; i++) {
+            vm.warp(t0 + i * 1 hours);
+            uint256 id = _create(farmer, SUM_INSURED);
+            _activate(id);
+            vm.startPrank(address(payoutReceiver));
+            policyManager.markAsClaimed(id);
+            policyManager.incrementClaimCount(farmer);
+            vm.stopPrank();
+        }
+        assertEq(policyManager.getFarmerActiveCount(farmer), 0);
+        assertEq(policyManager.getFarmerClaimsInWindow(farmer), 3);
+
+        vm.warp(t0 + 1 days);
+        _expectCapRevert(farmer, 3);
+
+        // One second before the oldest claim leaves the window: still refused.
+        vm.warp(t0 + 365 days - 1);
+        _expectCapRevert(farmer, 3);
+
+        // Oldest claim leaves the window: exactly one slot frees up, and that policy can pay.
+        vm.warp(t0 + 365 days);
+        uint256 next = _create(farmer, SUM_INSURED);
+        _expectCapRevert(farmer, 3);
+        _activate(next);
+        assertTrue(policyManager.canFarmerClaim(farmer), "the new policy could not pay");
+        vm.startPrank(address(payoutReceiver));
+        policyManager.markAsClaimed(next);
+        policyManager.incrementClaimCount(farmer);
+        vm.stopPrank();
+    }
+
+    /// @notice Mixed state: open policies and recent claims share the same 3 slots.
+    function test_openPolicyCap_openPlusClaimsShareSlots() public {
+        uint256 a = _create(farmer, SUM_INSURED);
+        _activate(a);
+        vm.startPrank(address(payoutReceiver));
+        policyManager.markAsClaimed(a);
+        policyManager.incrementClaimCount(farmer);
+        vm.stopPrank();
+
+        _create(farmer, SUM_INSURED); // PENDING
+        uint256 c = _create(farmer, SUM_INSURED);
+        _activate(c); // 1 claim + 1 PENDING + 1 ACTIVE
+        _expectCapRevert(farmer, 3);
+
+        // Cancelling an open policy frees a slot even though the claim stays in the window.
+        vm.prank(backend);
+        policyManager.cancelPolicy(c);
+        _create(farmer, SUM_INSURED);
+        _expectCapRevert(farmer, 3);
+
+        // Another farmer is unaffected.
+        _create(address(0xBEEF), SUM_INSURED);
+    }
+
+    function _expectCapRevert(address _farmer, uint256 used) internal {
+        vm.prank(backend);
+        vm.expectRevert(abi.encodeWithSelector(PolicyManager.TooManyActivePolicies.selector, _farmer, used, 3));
+        policyManager.createPolicy(_farmer, 1, SUM_INSURED, PREMIUM, 30, PolicyManager.CoverageType.DROUGHT, ORG);
+    }
+
     // ══════════════ Finding 10: exposure counted at createPolicy ══════════════
 
     function test_exposure_countedAtCreate_notDoubleCountedAtActivate() public {
@@ -252,11 +319,14 @@ contract AuditBatchV32Test is BaseTest {
         vm.prank(backend);
         policyManager.cancelPolicy(a);
         assertEq(policyManager.orgOutstandingSumInsured(ORG), 2_000e6, "ACTIVE cancel");
+        assertFalse(policyManager.exposureCounted(a), "flag left set after ACTIVE cancel");
+        assertTrue(policyManager.exposureCounted(b));
 
         vm.warp(policyManager.getPolicy(b).endDate + 1);
         vm.prank(backend);
         policyManager.expirePolicy(b);
         assertEq(policyManager.orgOutstandingSumInsured(ORG), 0, "expire");
+        assertFalse(policyManager.exposureCounted(b), "flag left set after expire");
     }
 
     function test_exposure_claim_releases() public {
@@ -265,6 +335,7 @@ contract AuditBatchV32Test is BaseTest {
         vm.prank(address(payoutReceiver));
         policyManager.markAsClaimed(id);
         assertEq(policyManager.orgOutstandingSumInsured(ORG), 0);
+        assertFalse(policyManager.exposureCounted(id), "flag left set after claim");
     }
 
     /// @notice A PENDING policy created before v3.2.0 (no creation-time exposure) adds its
@@ -286,6 +357,7 @@ contract AuditBatchV32Test is BaseTest {
         vm.prank(backend);
         policyManager.expirePolicy(legacy);
         assertEq(policyManager.orgOutstandingSumInsured(ORG), 2_000e6, "legacy release");
+        assertFalse(policyManager.exposureCounted(legacy));
     }
 
     /// @notice Cancelling a pre-upgrade PENDING policy releases nothing — it never added any —
@@ -336,6 +408,39 @@ contract AuditBatchV32Test is BaseTest {
         vm.prank(address(payoutReceiver));
         policyManager.markAsClaimed(id);
         _expectNotOpen(id, PolicyManager.PolicyStatus.CLAIMED);
+    }
+
+    /// @notice Reviewer follow-up: an ACTIVE policy past endDate that the backend has not yet
+    ///         expired backs no further coverage, so it cannot take a premium either.
+    function test_receivePremium_activePastEndDate_notYetExpired_reverts() public {
+        uint256 id = _create(farmer, SUM_INSURED);
+        _activate(id);
+        uint256 endDate = policyManager.getPolicy(id).endDate;
+
+        vm.warp(endDate + 1);
+        assertEq(uint8(policyManager.getPolicy(id).status), uint8(PolicyManager.PolicyStatus.ACTIVE));
+        uint256 reserveBefore = treasury.orgReserve(ORG);
+        vm.prank(backend);
+        vm.expectRevert(abi.encodeWithSelector(Treasury.PolicyCoverageEnded.selector, id, endDate));
+        treasury.receivePremium(id, PREMIUM);
+        assertEq(treasury.orgReserve(ORG), reserveBefore);
+        assertFalse(treasury.premiumReceived(id));
+
+        // A PENDING policy whose original endDate has passed is still open (activation resets it).
+        uint256 pend = _create(farmer, SUM_INSURED);
+        vm.warp(policyManager.getPolicy(pend).endDate + 1);
+        vm.prank(backend);
+        treasury.receivePremium(pend, PREMIUM);
+        assertTrue(treasury.premiumReceived(pend));
+    }
+
+    function test_receivePremium_activeAtEndDate_ok() public {
+        uint256 id = _create(farmer, SUM_INSURED);
+        _activate(id);
+        vm.warp(policyManager.getPolicy(id).endDate);
+        vm.prank(backend);
+        treasury.receivePremium(id, PREMIUM);
+        assertTrue(treasury.premiumReceived(id));
     }
 
     function _expectNotOpen(uint256 id, PolicyManager.PolicyStatus status) internal {

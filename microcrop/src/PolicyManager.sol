@@ -104,7 +104,9 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
     /// @notice Maximum open (ACTIVE + PENDING) policies per farmer.
     /// @dev Equal to MAX_CLAIMS_PER_FARMER_PER_YEAR (v3.2.0, was 5). With 5 open policies and a
     ///      3-claim cap, two policies whose premiums were paid could never pay out in a bad
-    ///      season (audit finding 8). Product-rule change: a farmer holds at most 3 open policies.
+    ///      season (audit finding 8). Product-rule change: a farmer holds at most 3 open policies,
+    ///      and createPolicy also counts claims paid in the rolling CLAIM_WINDOW against this cap,
+    ///      so open policies + recent claims never exceed the claim cap.
     uint256 public constant MAX_ACTIVE_POLICIES_PER_FARMER = 3;
 
     /// @notice Maximum paid claims per farmer in any rolling CLAIM_WINDOW
@@ -419,7 +421,8 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
      * - Sum insured must be between 10,000 and 1,000,000 USDC
      * - Premium must be greater than zero
      * - Duration must be between 30 and 365 days
-     * - Farmer cannot have more than MAX_ACTIVE_POLICIES_PER_FARMER (3) open policies
+     * - Farmer's open policies + claims paid in the rolling window must stay below
+     *   MAX_ACTIVE_POLICIES_PER_FARMER (3)
      *
      * @param farmer Address of the farmer receiving coverage
      * @param plotId Off-chain reference to the plot being insured
@@ -467,11 +470,14 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
             revert InvalidDuration(durationDays, MIN_DURATION_DAYS, MAX_DURATION_DAYS);
         }
 
-        // Cap TOTAL open policies (ACTIVE + PENDING) at creation time, so unactivated PENDING
-        // policies cannot accumulate without bound (Finding 5).
-        uint256 currentOpenPolicies = _farmerActiveCounts[farmer] + _farmerPendingCounts[farmer];
-        if (currentOpenPolicies >= MAX_ACTIVE_POLICIES_PER_FARMER) {
-            revert TooManyActivePolicies(farmer, currentOpenPolicies, MAX_ACTIVE_POLICIES_PER_FARMER);
+        // Cap open policies (ACTIVE + PENDING) PLUS claims already paid in the rolling window at
+        // creation time. Unactivated PENDING policies cannot accumulate without bound (Finding 5),
+        // and every open policy keeps a claim slot it can actually use: a farmer whose 3 policies
+        // just paid out cannot buy a 4th whose premium could never pay (audit finding 8). The
+        // `current` reported in TooManyActivePolicies is this combined count.
+        uint256 usedSlots = _farmerActiveCounts[farmer] + _farmerPendingCounts[farmer] + _claimsInWindow(farmer);
+        if (usedSlots >= MAX_ACTIVE_POLICIES_PER_FARMER) {
+            revert TooManyActivePolicies(farmer, usedSlots, MAX_ACTIVE_POLICIES_PER_FARMER);
         }
 
         // Generate unique policy ID (overflow protected)
@@ -751,7 +757,6 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
             // Release the exposure counted at creation (v3.2.0). A PENDING policy created before
             // v3.2.0 never added exposure, so nothing is released for it (audit finding 10).
             if (_exposureCounted[policyId]) {
-                delete _exposureCounted[policyId];
                 _releaseOrgExposure(policyId, policy.sumInsured);
             }
         }
@@ -941,7 +946,8 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
     }
 
     /// @notice Whether a policy's sum insured is currently counted in its org's outstanding
-    ///         exposure. False for a PENDING policy created before v3.2.0 (counted on activation).
+    ///         exposure. False for a PENDING policy created before v3.2.0 (counted on activation)
+    ///         and for any policy that has left coverage (CLAIMED / EXPIRED / CANCELLED).
     function exposureCounted(uint256 policyId) external view returns (bool) {
         return _exposureCounted[policyId];
     }
@@ -974,7 +980,10 @@ contract PolicyManager is Initializable, AccessControlUpgradeable, ReentrancyGua
     /// @dev Release an org's outstanding exposure when a policy leaves coverage (claimed /
     ///      cancelled / expired, or a PENDING policy cancelled with _exposureCounted set). Guards underflow for pre-v3 policies whose
     ///      exposure was never recorded.
+    ///      Clears _exposureCounted: every caller moves the policy to a terminal state, so the
+    ///      flag reads "currently counted" (false for CLAIMED / EXPIRED / CANCELLED).
     function _releaseOrgExposure(uint256 policyId, uint256 sumInsured) private {
+        delete _exposureCounted[policyId];
         address org = _policyOrg[policyId];
         uint256 outstanding = _orgOutstandingSumInsured[org];
         _orgOutstandingSumInsured[org] = outstanding > sumInsured ? outstanding - sumInsured : 0;

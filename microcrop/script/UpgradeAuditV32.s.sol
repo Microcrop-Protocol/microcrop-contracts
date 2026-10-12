@@ -35,8 +35,10 @@ interface ITreasuryWiring {
  * `_exposureCounted` (slot 13), __gap 43 -> 41. Treasury layout is unchanged. Both new mappings
  * default to empty/false, which is the correct starting state, so no initializer or migration runs:
  *   - PENDING policies created before the upgrade have `_exposureCounted == false`; activation adds
- *     their exposure once, and cancelling them releases nothing. At the time of writing mainnet has
- *     0 policies and Sepolia 1 (CLAIMED), so no live policy takes the legacy path.
+ *     their exposure once, and cancelling them releases nothing. Until activated, such a policy could
+ *     take a premium with no exposure counted (the finding-10 hole), so run() REFUSES to broadcast
+ *     while any policy is PENDING: activate or cancel them first. (2026-10-12: mainnet 0 policies,
+ *     Sepolia 1, CLAIMED.)
  *   - Claims paid before the upgrade are NOT counted in the rolling window (it starts empty).
  *   - Any org whose ratio was explicitly set below 3000 bps keeps that stored value but is clamped
  *     to 3000 when applied (effectiveReserveRatioBps).
@@ -45,6 +47,17 @@ interface ITreasuryWiring {
  * deployed PolicyManager version already has.
  *
  * The broadcaster must hold UPGRADER_ROLE on both proxies.
+ *
+ * PRECONDITION (cross-repo, BLOCKS BROADCAST): every on-chain policy's `farmer` must be a distinct
+ * per-farmer address. microcrop-backend currently passes `policy.farmer?.walletAddress ||
+ * backendWallet` (payment.service.js, blockchain.worker.js) and never sets Farmer.walletAddress, so
+ * every policy's farmer is the backend wallet and the per-farmer limits apply PLATFORM-WIDE. Under
+ * 3.2.0 that means at most 3 open policies (open + rolling-window claims) across all orgs, and after
+ * 3 paid claims anywhere every payout reverts for 365 days. Before broadcasting, the backend must
+ * (1) derive and persist a distinct on-chain identity per farmer (backfilled, no backendWallet
+ * fallback) and (2) refuse a purchase before the M-Pesa charge when the farmer's open + in-window
+ * claims would hit MAX_ACTIVE_POLICIES_PER_FARMER. Set ACK_BACKEND_FARMER_IDENTITY=true only once
+ * both are deployed; run() refuses otherwise.
  *
  * GATES (run before this): forge test green (incl. PerOrgFork mainnet-fork shadow run);
  * `forge inspect PolicyManager storageLayout` / `forge inspect Treasury storageLayout` diffed
@@ -78,6 +91,11 @@ contract UpgradeAuditV32 is Script {
 
         require(_is(pmProxy, "3.1.0"), "PolicyManager not at 3.1.0");
         require(_is(treasuryProxy, "3.1.0"), "Treasury not at 3.1.0");
+        require(
+            vm.envOr("ACK_BACKEND_FARMER_IDENTITY", false),
+            "Set ACK_BACKEND_FARMER_IDENTITY=true only after the backend ships per-farmer on-chain identities + the cap pre-check (see natspec)"
+        );
+        _requireNoPendingPolicies(PolicyManager(pmProxy));
         address wiredPm = ITreasuryWiring(treasuryProxy).policyManager();
         address wiredPr = ITreasuryWiring(treasuryProxy).payoutReceiver();
 
@@ -103,6 +121,20 @@ contract UpgradeAuditV32 is Script {
         require(IRoleView(pmProxy).hasRole(ORACLE_ROLE, prProxy), "PayoutReceiver lost ORACLE_ROLE");
 
         console.log("\n=== PolicyManager + Treasury -> 3.2.0; wiring and roles survived ===");
+    }
+
+    /// @dev A PENDING policy from before 3.2.0 has no exposure counted until it activates, so it
+    ///      could still take a premium the org can withdraw (finding 10). Refuse while any exists.
+    function _requireNoPendingPolicies(PolicyManager pm) internal view {
+        uint256 total = pm.getTotalPolicies();
+        console.log("Policies to check:    ", total);
+        for (uint256 id = 1; id <= total; ++id) {
+            if (!pm.policyExists(id)) continue;
+            require(
+                pm.getPolicy(id).status != PolicyManager.PolicyStatus.PENDING,
+                "live PENDING policy: activate or cancel it before upgrading (legacy exposure path)"
+            );
+        }
     }
 
     function _is(address proxy, string memory v) internal view returns (bool) {

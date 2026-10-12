@@ -286,6 +286,10 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
     ///         become withdrawable without backing any coverage (audit finding 11).
     error PolicyNotOpen(uint256 policyId, PolicyManager.PolicyStatus status);
 
+    /// @notice Thrown when a premium is received for an ACTIVE policy whose coverage period has
+    ///         ended but which the backend has not yet expired (audit finding 11, follow-up).
+    error PolicyCoverageEnded(uint256 policyId, uint256 endDate);
+
     /// @notice Thrown when a withdrawal would breach the org's required reserve.
     error WouldBreachReserve(address org, uint256 reserveRequired, uint256 remaining);
 
@@ -363,11 +367,17 @@ contract Treasury is Initializable, AccessControlUpgradeable, ReentrancyGuard, P
         // Resolve the backing org and split the per-org platform fee.
         address org = _resolveOrg(policyId);
 
-        // Only an open policy (PENDING awaiting activation, or ACTIVE) can take a premium. A premium
-        // for a cancelled/expired/claimed policy backs no coverage (audit finding 11).
-        PolicyManager.PolicyStatus status = policyManager.getPolicy(policyId).status;
-        if (status != PolicyManager.PolicyStatus.PENDING && status != PolicyManager.PolicyStatus.ACTIVE) {
-            revert PolicyNotOpen(policyId, status);
+        // Only an open policy (PENDING awaiting activation, or ACTIVE within its coverage period) can
+        // take a premium. A premium for a cancelled/expired/claimed policy backs no coverage (audit
+        // finding 11); nor does one for an ACTIVE policy past its endDate that the backend has not
+        // yet expired, since expirePolicy would release its exposure and free the premium as surplus.
+        // A PENDING policy's endDate is reset at activation, so it is not checked here.
+        PolicyManager.Policy memory p = policyManager.getPolicy(policyId);
+        if (p.status != PolicyManager.PolicyStatus.PENDING && p.status != PolicyManager.PolicyStatus.ACTIVE) {
+            revert PolicyNotOpen(policyId, p.status);
+        }
+        if (p.status == PolicyManager.PolicyStatus.ACTIVE && block.timestamp > p.endDate) {
+            revert PolicyCoverageEnded(policyId, p.endDate);
         }
 
         uint256 platformFee = (amount * _feeBps(org)) / BPS_DENOMINATOR;
