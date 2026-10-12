@@ -93,6 +93,17 @@ Note: PolicyNFT is **redeployed** (new address) — record it and update the bac
 
 ---
 
+## Audit batch v3.2.0 (PolicyManager + Treasury)
+
+`UpgradeAuditV32.s.sol` upgrades the PolicyManager and Treasury proxies 3.1.0 → 3.2.0 (audit findings
+8, 10, 11, 12). Append-only: PolicyManager gains `_recentClaimTimestamps` + `_exposureCounted`
+(slots 12–13, `__gap` 43 → 41); Treasury layout is unchanged. No initializer or migration. Two
+behaviour changes partners will notice: an org's reserve requirement now includes PENDING policies
+and defaults to 30% (was 20% of ACTIVE only), and a farmer may hold at most 3 open policies (was 5).
+Fork-proven by `test/PerOrgFork.t.sol` (upgrades the live mainnet proxies on a fork).
+
+---
+
 ## Other scripts (context)
 
 - `Deploy.s.sol` — initial full-stack deployment.

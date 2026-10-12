@@ -40,8 +40,8 @@ contract PerOrgTreasuryTest is BaseTest {
     function test_activate_tracksOrgOutstanding_and_reserveRequired() public {
         _activePolicy();
         assertEq(policyManager.orgOutstandingSumInsured(ORG), SUM_INSURED, "outstanding mismatch");
-        // default ratio 2000 bps = 20%
-        assertEq(treasury.reserveRequired(ORG), (SUM_INSURED * 2000) / 10000, "reserveRequired mismatch");
+        // default ratio 3000 bps = 30% (v3.2.0, was 2000 — audit finding 12)
+        assertEq(treasury.reserveRequired(ORG), (SUM_INSURED * 3000) / 10000, "reserveRequired mismatch");
     }
 
     function test_claim_releasesOrgOutstanding() public {
@@ -117,22 +117,22 @@ contract PerOrgTreasuryTest is BaseTest {
     // ── withdraw surplus: org-only, solvency-gated ──────────────────────────
 
     function test_withdrawSurplus_aboveRequired_succeeds() public {
-        _activePolicy(); // outstanding 1000 -> required reserve 200
+        _activePolicy(); // outstanding 1000 -> required reserve 300 (30% default since v3.2.0)
         vm.prank(ORG);
         treasury.depositReserve(ORG, 500e6);
-        // required = 200; can withdraw up to 300 surplus
+        // required = 300; can withdraw up to 200 surplus
         vm.prank(ORG);
-        treasury.withdrawOrgSurplus(300e6, ORG);
-        assertEq(treasury.orgReserve(ORG), 200e6, "should leave exactly the required reserve");
+        treasury.withdrawOrgSurplus(200e6, ORG);
+        assertEq(treasury.orgReserve(ORG), 300e6, "should leave exactly the required reserve");
     }
 
     function test_withdrawSurplus_breachingReserve_reverts() public {
-        _activePolicy(); // required reserve = 200
+        _activePolicy(); // required reserve = 300 (30% default since v3.2.0)
         vm.prank(ORG);
         treasury.depositReserve(ORG, 500e6);
-        // withdrawing 400 would leave 100 < 200 required
+        // withdrawing 400 would leave 100 < 300 required
         vm.prank(ORG);
-        vm.expectRevert(abi.encodeWithSelector(Treasury.WouldBreachReserve.selector, ORG, 200e6, 100e6));
+        vm.expectRevert(abi.encodeWithSelector(Treasury.WouldBreachReserve.selector, ORG, 300e6, 100e6));
         treasury.withdrawOrgSurplus(400e6, ORG);
     }
 
@@ -152,12 +152,12 @@ contract PerOrgTreasuryTest is BaseTest {
     function test_setOrgReserveRatioBps_affectsRequired_adminOnly() public {
         _activePolicy();
         vm.prank(admin);
-        treasury.setOrgReserveRatioBps(ORG, 3000); // 30%
-        assertEq(treasury.reserveRequired(ORG), (SUM_INSURED * 3000) / 10000);
+        treasury.setOrgReserveRatioBps(ORG, 5000); // 50% (3000 is now the default/floor)
+        assertEq(treasury.reserveRequired(ORG), (SUM_INSURED * 5000) / 10000);
 
         vm.prank(unauthorized);
         vm.expectRevert();
-        treasury.setOrgReserveRatioBps(ORG, 1000);
+        treasury.setOrgReserveRatioBps(ORG, 4000);
     }
 
     function test_createPolicy_zeroOrg_reverts() public {

@@ -1063,8 +1063,9 @@ RPC_URL=https://mainnet.base.org
 | `MAX_SUM_INSURED` | 1,000,000 USDC | Maximum coverage |
 | `MIN_DURATION_DAYS` | 30 | Minimum policy length |
 | `MAX_DURATION_DAYS` | 365 | Maximum policy length |
-| `MAX_ACTIVE_POLICIES` | 5 | Per farmer |
-| `MAX_CLAIMS_PER_YEAR` | 3 | Per farmer |
+| `MAX_ACTIVE_POLICIES` | 3 | Open (PENDING + ACTIVE) per farmer; was 5 before PolicyManager 3.2.0 |
+| `MAX_CLAIMS_PER_YEAR` | 3 | Per farmer, in any rolling 365-day window (PolicyManager 3.2.0) |
+| `DEFAULT_RESERVE_RATIO_BPS` | 3000 | 30% of outstanding (PENDING + ACTIVE) sum insured; also the floor (Treasury 3.2.0) |
 | `PLATFORM_FEE` | 10% | Default fee |
 
 ### Function Quick Reference

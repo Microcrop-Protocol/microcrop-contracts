@@ -62,8 +62,8 @@ contract PerOrgForkTest is Test {
         IUUPS(POLICY_MANAGER).upgradeToAndCall(address(new PolicyManager()), "");
         IUUPS(TREASURY).upgradeToAndCall(address(new Treasury()), "");
         IUUPS(PAYOUT_RECEIVER).upgradeToAndCall(address(new PayoutReceiver()), "");
-        assertEq(pm.version(), "3.1.0");
-        assertEq(treasury.version(), "3.1.0");
+        assertEq(pm.version(), "3.2.0");
+        assertEq(treasury.version(), "3.2.0");
         assertEq(pr.version(), "2.2.0");
 
         // Wire v3 + grant this test the roles to drive the flow.
@@ -89,8 +89,8 @@ contract PerOrgForkTest is Test {
 
         uint256 policyId = _newActivePolicy();
         treasury.receivePremium(policyId, 1e6); // premium received (guard) + seeds reserve
-        // 20% default reserve ratio on 1000 sum insured.
-        assertEq(treasury.reserveRequired(org), 200e6, "reserveRequired");
+        // 30% default reserve ratio on 1000 sum insured (v3.2.0, was 20%).
+        assertEq(treasury.reserveRequired(org), 300e6, "reserveRequired");
 
         (PayoutReceiver.CropDetermination memory d, bytes memory sig) = _determination(policyId, 4800);
         uint256 payout = d.payoutAmount; // 480e6
